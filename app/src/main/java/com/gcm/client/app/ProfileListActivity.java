@@ -358,11 +358,15 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
         String prefIp = prefs.getPrefIp();
         String fallbackIp = prefs.getFallbackIp();
         String userId = prefs.getUserID();
+        // ECH 参数：dns= DoH 服务器，domain= ECH 查询域名，disable_ech 仅在为 true 时导出
+        String echDns = prefs.getEchDns();
+        String echDomain = prefs.getEchDomain();
+        boolean disableEch = prefs.getDisableEch();
 
         // 恢复原配置
         prefs.setCurrentProfileId(originalId);
 
-        // 构建查询参数：ip= 优选中转节点，fip= 出口代理 IP，user_id= 用户标识
+        // 构建查询参数：ip= 优选中转节点，fip= 出口代理 IP，user_id= 用户标识，dns=/domain= ECH
         StringBuilder query = new StringBuilder();
         if (!prefIp.isEmpty()) {
             query.append("ip=").append(prefIp);
@@ -374,6 +378,18 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
         if (!userId.isEmpty()) {
             if (query.length() > 0) query.append("&");
             query.append("user_id=").append(userId);
+        }
+        if (!echDns.isEmpty()) {
+            if (query.length() > 0) query.append("&");
+            query.append("dns=").append(echDns);
+        }
+        if (!echDomain.isEmpty()) {
+            if (query.length() > 0) query.append("&");
+            query.append("domain=").append(echDomain);
+        }
+        if (disableEch) {
+            if (query.length() > 0) query.append("&");
+            query.append("disable_ech=1");
         }
 
         String protocol = "gcm://" + wssAddr;
@@ -530,10 +546,13 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
             wssAddr = "wss://" + wssAddr;
         }
 
-        // 解析查询参数：ip= 优选中转节点，fip= 出口代理 IP，user_id= 用户标识
+        // 解析查询参数：ip= 优选中转节点，fip= 出口代理 IP，user_id= 用户标识，dns=/domain= ECH
         String prefIp = "";
         String fallbackIp = "";
         String userId = "";
+        String echDns = "";
+        String echDomain = "";
+        boolean disableEch = false;
         if (!query.isEmpty()) {
             String[] pairs = query.split("&");
             for (String pair : pairs) {
@@ -550,6 +569,16 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
                         case "fip":
                         case "fallbackip":
                             fallbackIp = value;
+                            break;
+                        case "dns":
+                            echDns = value;
+                            break;
+                        case "domain":
+                            echDomain = value;
+                            break;
+                        case "disable_ech":
+                            // 1/true/yes 表示禁用 ECH
+                            disableEch = value.equals("1") || value.equalsIgnoreCase("true") || value.equalsIgnoreCase("yes");
                             break;
                         case "token":
                         case "user_id":
@@ -573,12 +602,14 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
         // 使用这些参数创建新配置
         String newId = UUID.randomUUID().toString();
         // 询问用户配置名称
-        showImportNameDialog(newId, defaultName, wssAddr, prefIp, fallbackIp, userId);
+        showImportNameDialog(newId, defaultName, wssAddr, prefIp, fallbackIp, userId, echDns, echDomain, disableEch);
     }
 
     private void showImportNameDialog(final String id, final String defaultName,
                                       final String wssAddr, final String prefIp,
-                                      final String fallbackIp, final String userId) {
+                                      final String fallbackIp, final String userId,
+                                      final String echDns, final String echDomain,
+                                      final boolean disableEch) {
         final EditText input = new EditText(this);
         input.setText(defaultName);
         new AlertDialog.Builder(this)
@@ -606,6 +637,9 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
                     prefs.setPrefIp(prefIp);
                     if (!fallbackIp.isEmpty()) prefs.setFallbackIp(fallbackIp);
                     prefs.setUserID(userId);
+                    if (!echDns.isEmpty()) prefs.setEchDns(echDns);
+                    if (!echDomain.isEmpty()) prefs.setEchDomain(echDomain);
+                    prefs.setDisableEch(disableEch);
 
                     // 恢复原配置
                     prefs.setCurrentProfileId(originalId);

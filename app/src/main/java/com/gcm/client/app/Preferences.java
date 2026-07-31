@@ -37,6 +37,9 @@ public class Preferences
         public static final String PREF_IP = "PrefIp";
         public static final String FALLBACK_IP = "FallbackIp";
         public static final String USER_ID = "UserId";
+        public static final String ECH_DNS = "EchDns";
+        public static final String ECH_DOMAIN = "EchDomain";
+        public static final String DISABLE_ECH = "DisableEch";
         public static final String WS_CONN = "WsConn";
         // IPv6 路由禁用
         public static final String DISABLE_IPV6_ROUTE = "DisableIpv6Route";
@@ -113,7 +116,7 @@ public class Preferences
             editor.remove(PROFILE_NAME_PREFIX + id);
             
             // Clean up all keys for this profile
-            String[] keys = {WORKER_HOST, PREF_IP, FALLBACK_IP, USER_ID, WS_CONN, DISABLE_IPV6_ROUTE};
+            String[] keys = {WORKER_HOST, PREF_IP, FALLBACK_IP, USER_ID, ECH_DNS, ECH_DOMAIN, DISABLE_ECH, WS_CONN, DISABLE_IPV6_ROUTE};
             for (String k : keys) {
                 editor.remove(k + "_" + id);
             }
@@ -279,6 +282,39 @@ public class Preferences
         public void setFallbackIp(String ip) {
                 SharedPreferences.Editor editor = prefs.edit();
                 editor.putString(getKey(FALLBACK_IP), ip);
+                editor.commit();
+        }
+
+        // ECH DoH 服务器（查询 ECH 公钥用）
+        public String getEchDns() {
+                return prefs.getString(getKey(ECH_DNS), "dns.alidns.com/dns-query");
+        }
+
+        public void setEchDns(String addr) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putString(getKey(ECH_DNS), addr);
+                editor.commit();
+        }
+
+        // ECH 查询域名
+        public String getEchDomain() {
+                return prefs.getString(getKey(ECH_DOMAIN), "cloudflare-ech.com");
+        }
+
+        public void setEchDomain(String d) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putString(getKey(ECH_DOMAIN), d);
+                editor.commit();
+        }
+
+        // 禁用 ECH（fallback 标准 TLS 1.3）
+        public boolean getDisableEch() {
+                return prefs.getBoolean(getKey(DISABLE_ECH), false);
+        }
+
+        public void setDisableEch(boolean disable) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putBoolean(getKey(DISABLE_ECH), disable);
                 editor.commit();
         }
 

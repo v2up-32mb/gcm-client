@@ -33,7 +33,10 @@ public class ProfileEditActivity extends Activity {
     private EditText edittext_pref_ip;
     private EditText edittext_user_id;
     private EditText edittext_fallback_ip;
+    private EditText edittext_ech_dns;
+    private EditText edittext_ech_domain;
     private EditText edittext_ws_conn;
+    private CheckBox checkbox_disable_ech;
     private CheckBox checkbox_disable_ipv6_route;
     private Button btn_import;
     private Button btn_save;
@@ -62,7 +65,10 @@ public class ProfileEditActivity extends Activity {
         edittext_pref_ip = findViewById(R.id.pref_ip);
         edittext_user_id = findViewById(R.id.user_id);
         edittext_fallback_ip = findViewById(R.id.fallback_ip);
+        edittext_ech_dns = findViewById(R.id.ech_dns);
+        edittext_ech_domain = findViewById(R.id.ech_domain);
         edittext_ws_conn = findViewById(R.id.ws_conn);
+        checkbox_disable_ech = findViewById(R.id.disable_ech);
         checkbox_disable_ipv6_route = findViewById(R.id.disable_ipv6_route);
         btn_import = findViewById(R.id.btn_import);
         btn_save = findViewById(R.id.btn_save);
@@ -96,7 +102,10 @@ public class ProfileEditActivity extends Activity {
         edittext_pref_ip.setText(prefs.getPrefIp());
         edittext_user_id.setText(prefs.getUserID());
         edittext_fallback_ip.setText(prefs.getFallbackIp());
+        edittext_ech_dns.setText(prefs.getEchDns());
+        edittext_ech_domain.setText(prefs.getEchDomain());
         edittext_ws_conn.setText(String.valueOf(prefs.getWsConn()));
+        checkbox_disable_ech.setChecked(prefs.getDisableEch());
         checkbox_disable_ipv6_route.setChecked(prefs.getDisableIpv6Route());
 
         // 恢复原配置
@@ -113,7 +122,10 @@ public class ProfileEditActivity extends Activity {
             edittext_pref_ip.setEnabled(false);
             edittext_user_id.setEnabled(false);
             edittext_fallback_ip.setEnabled(false);
+            edittext_ech_dns.setEnabled(false);
+            edittext_ech_domain.setEnabled(false);
             edittext_ws_conn.setEnabled(false);
+            checkbox_disable_ech.setEnabled(false);
             checkbox_disable_ipv6_route.setEnabled(false);
             btn_save.setEnabled(false);
 
@@ -163,6 +175,8 @@ public class ProfileEditActivity extends Activity {
         prefs.setPrefIp(edittext_pref_ip.getText().toString().trim());
         prefs.setUserID(edittext_user_id.getText().toString().trim());
         prefs.setFallbackIp(edittext_fallback_ip.getText().toString().trim());
+        prefs.setEchDns(edittext_ech_dns.getText().toString().trim());
+        prefs.setEchDomain(edittext_ech_domain.getText().toString().trim());
 
         // 保存 WebSocket 连接数
         try {
@@ -177,6 +191,7 @@ public class ProfileEditActivity extends Activity {
             prefs.setWsConn(3); // 默认值
         }
 
+        prefs.setDisableEch(checkbox_disable_ech.isChecked());
         prefs.setDisableIpv6Route(checkbox_disable_ipv6_route.isChecked());
 
         // 恢复原配置
@@ -277,10 +292,12 @@ public class ProfileEditActivity extends Activity {
             wssAddr = "wss://" + wssAddr;
         }
 
-        // 解析查询参数：ip= 优选中转节点，fip= 出口代理 IP，user_id= 用户标识
+        // 解析查询参数：ip= 优选中转节点，fip= 出口代理 IP，user_id= 用户标识，dns=/domain= ECH
         String prefIp = "";
         String fallbackIp = "";
         String userId = "";
+        String echDns = "";
+        String echDomain = "";
         if (!query.isEmpty()) {
             String[] pairs = query.split("&");
             for (String pair : pairs) {
@@ -296,6 +313,12 @@ public class ProfileEditActivity extends Activity {
                         case "fip":
                         case "fallbackip":
                             fallbackIp = value;
+                            break;
+                        case "dns":
+                            echDns = value;
+                            break;
+                        case "domain":
+                            echDomain = value;
                             break;
                         case "token":
                         case "user_id":
@@ -323,6 +346,12 @@ public class ProfileEditActivity extends Activity {
         }
         if (!fallbackIp.isEmpty()) {
             edittext_fallback_ip.setText(fallbackIp);
+        }
+        if (!echDns.isEmpty()) {
+            edittext_ech_dns.setText(echDns);
+        }
+        if (!echDomain.isEmpty()) {
+            edittext_ech_domain.setText(echDomain);
         }
         if (!userId.isEmpty()) {
             edittext_user_id.setText(userId);

@@ -68,6 +68,30 @@
             android:hint="1.1.1.1,8.8.8.8"
             android:singleLine="true"/>
 
+        <!-- ECH DoH 服务器 -->
+        <TextView android:text="@string/ech_dns"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textStyle="bold"
+            android:paddingTop="16dp"/>
+        <EditText android:id="@+id/ech_dns"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="dns.alidns.com/dns-query"
+            android:singleLine="true"/>
+
+        <!-- ECH 查询域名 -->
+        <TextView android:text="@string/ech_domain"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textStyle="bold"
+            android:paddingTop="16dp"/>
+        <EditText android:id="@+id/ech_domain"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="cloudflare-ech.com"
+            android:singleLine="true"/>
+
         <!-- WebSocket 连接数 -->
         <TextView android:text="@string/ws_conn"
             android:layout_width="wrap_content"
@@ -91,6 +115,11 @@
             android:paddingTop="24dp"
             android:paddingBottom="8dp"/>
 
+
+        <CheckBox android:id="@+id/disable_ech"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/disable_ech"/>
 
         <CheckBox android:id="@+id/disable_ipv6_route"
             android:layout_width="match_parent"

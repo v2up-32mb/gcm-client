@@ -190,6 +190,12 @@ public class TProxyService extends VpnService {
                         // relay 字段使用优选中转节点（PREF_IP）：逗号分隔多个 IP:端口，
                         // 由 Go 库在建立 WSS 时作为 TCP 中继点，TLS SNI 仍为 workerHost。
                         // fip 字段为出口代理 IP（FALLBACK_IP）：作为 ?fallbackip= 查询参数透传给 Worker。
+                        // 字段映射对齐 GCM 主分支：
+                        //   PREF_IP   → relayIPs（优选中转节点列表）
+                        //   FALLBACK_IP → proxyIP（出口代理 IP）
+                        //   ECH_DOMAIN → echDomain（ECH 查询域名）
+                        //   ECH_DNS    → dohURL（DoH 服务器，空则使用 GCM 内置备用列表）
+                        //   disable_ech=true → enableECH=false（回落标准 TLS 1.3）
                         Gcm.startSocksProxy(
                                 prefs.getSocksAddress() + ":" + Integer.toString(prefs.getSocksPort()),
                                 workerHost,
@@ -197,6 +203,10 @@ public class TProxyService extends VpnService {
                                 prefs.getPrefIp(),
                                 prefs.getUserID(),
                                 prefs.getFallbackIp(),
+                                prefs.getEchDomain(),   // echDomain
+                                prefs.getEchDns(),       // dohURL
+                                !prefs.getDisableEch(),  // enableECH = !disableEch
+                                prefs.getDisableIpv6Route(),
                                 true  // verbose 日志
                         );
                 } catch (Exception e) {
