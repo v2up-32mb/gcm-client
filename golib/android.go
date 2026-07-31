@@ -28,49 +28,16 @@ var (
 
 // StartSocksProxy 启动 GCM 代理（gomobile AAR 入口）
 func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID, proxyIP, echDomain, dohURL string, enableECH, disableIPv6Route, enableDNSWarmup, verbose bool) error {
-	_ = disableIPv6Route
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
 	if socks5Server != nil {
 		return fmt.Errorf("GCM proxy is already running")
 	}
 
-	c := config.DefaultConfig()
-	c.ListenAddress = listenAddr
-	c.WorkerHost = strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(workerHost, "wss://"), "https://"), "/")
-	if wsConn > 0 {
-		c.MinPoolSize, c.MaxPoolSize = wsConn, wsConn
-	} else {
-		c.MinPoolSize, c.MaxPoolSize = 3, 3
+	c, err := buildConfig(listenAddr, workerHost, wsConn, relayIPs, userID, proxyIP, echDomain, dohURL, enableECH, disableIPv6Route, enableDNSWarmup, verbose)
+	if err != nil {
+		return err
 	}
-	if relayIPs != "" {
-		for _, item := range strings.Split(relayIPs, ",") {
-			if item = strings.TrimSpace(item); item != "" {
-				c.RelayIPs = append(c.RelayIPs, item)
-			}
-		}
-	}
-	c.UserID = userID
-	c.ProxyIP = proxyIP
-	if echDomain != "" {
-		c.ECHDomain = echDomain
-	}
-	// DoH 服务器：dohURL 非空用用户的；为空默认 https://doh.pub/dns-query
-	if dohURL = strings.TrimSpace(dohURL); dohURL != "" {
-		c.DoHUrl = dohURL
-	} else {
-		c.DoHUrl = "https://doh.pub/dns-query"
-	}
-	c.EnableECH = enableECH
-	if verbose {
-		c.LogLevel = config.DEBUG
-	} else {
-		c.LogLevel = config.INFO
-	}
-	c.EnableLogFile = false
-	// 默认关闭 DNS 预热以避免冷启动冲突；可由 UI 开关启用
-	c.EnableDNSWarmup = enableDNSWarmup
-	c.EnableQualityMonitor = true
 
 	logger.InitGlobalLogger(c)
 	systemLog := logger.GetLogger("System")
@@ -98,11 +65,29 @@ func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID
 	if c.EnableDoHProxy {
 		d.EnableProxy(pool.NewProxyTransport(p))
 	}
+	warmupDone := make(chan struct{})
 	go func() {
+		defer close(warmupDone)
+		defer func() {
+			if r := recover(); r != nil {
+				systemLog.Error("连接池预热 panic: %v", r)
+			}
+		}()
 		if err := p.Warmup(); err != nil {
 			systemLog.Warn("连接池预热失败: %v", err)
 		}
 	}()
+	if c.EnableDNSWarmup {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					systemLog.Error("DNS 预热 panic: %v", r)
+				}
+			}()
+			<-warmupDone
+			dc.Warmup(c.DNSWarmupDomains)
+		}()
+	}
 	s := socks5.NewServer(c, p, dc)
 	if err := s.Start(); err != nil {
 		p.Close()
@@ -119,22 +104,66 @@ func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID
 	return nil
 }
 
+func buildConfig(listenAddr, workerHost string, wsConn int, relayIPs, userID, proxyIP, echDomain, dohURL string, enableECH, disableIPv6Route, enableDNSWarmup, verbose bool) (*config.Config, error) {
+	_ = disableIPv6Route
+	c := config.DefaultConfig()
+	c.ListenAddress = strings.TrimSpace(listenAddr)
+	c.WorkerHost = strings.TrimRight(strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(workerHost), "wss://"), "https://"), "/")
+	if c.ListenAddress == "" {
+		return nil, fmt.Errorf("SOCKS5 listen address is required")
+	}
+	if c.WorkerHost == "" {
+		return nil, fmt.Errorf("Worker address is required")
+	}
+	if wsConn > 0 {
+		c.MinPoolSize, c.MaxPoolSize = wsConn, wsConn
+	} else {
+		c.MinPoolSize, c.MaxPoolSize = 3, 3
+	}
+	if relayIPs != "" {
+		for _, item := range strings.Split(relayIPs, ",") {
+			if item = strings.TrimSpace(item); item != "" {
+				c.RelayIPs = append(c.RelayIPs, item)
+			}
+		}
+	}
+	c.UserID = userID
+	c.ProxyIP = proxyIP
+	if echDomain != "" {
+		c.ECHDomain = echDomain
+	}
+	// DoH 服务器：非空时使用用户配置，空值保留主分支内置备用列表语义。
+	if dohURL = strings.TrimSpace(dohURL); dohURL != "" {
+		c.DoHUrl = dohURL
+	}
+	c.EnableECH = enableECH
+	if verbose {
+		c.LogLevel = config.DEBUG
+	} else {
+		c.LogLevel = config.INFO
+	}
+	c.EnableLogFile = false
+	// 默认关闭 DNS 预热以避免冷启动冲突；可由 UI 开关启用
+	c.EnableDNSWarmup = enableDNSWarmup
+	c.EnableQualityMonitor = true
+
+	return c, nil
+}
+
 // StopSocksProxy 停止代理并逆序释放所有资源。
 func StopSocksProxy() {
-	go func() {
-		lifecycleMu.Lock()
-		defer lifecycleMu.Unlock()
-		if socks5Server == nil {
-			return
-		}
-		if echManager != nil {
-			echManager.StopAutoRefresh()
-		}
-		_ = socks5Server.Close()
-		connPool.Close()
-		relayManager.Close()
-		dnsCache.Close()
-		logger.Close()
-		cfg, dohClient, dnsCache, relayManager, echManager, connPool, socks5Server = nil, nil, nil, nil, nil, nil, nil
-	}()
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	if socks5Server == nil {
+		return
+	}
+	if echManager != nil {
+		echManager.StopAutoRefresh()
+	}
+	_ = socks5Server.Close()
+	connPool.Close()
+	relayManager.Close()
+	dnsCache.Close()
+	logger.Close()
+	cfg, dohClient, dnsCache, relayManager, echManager, connPool, socks5Server = nil, nil, nil, nil, nil, nil, nil
 }

@@ -10,15 +10,19 @@ package com.gcm.client.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.net.VpnService;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
@@ -28,6 +32,7 @@ import android.widget.ImageView;
 import android.widget.PopupMenu;
 import android.widget.TextView;
 import android.widget.Toast;
+import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import com.google.android.material.appbar.MaterialToolbar;
@@ -53,6 +58,56 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
     private FloatingActionButton fabMain;
     private Preferences prefs;
     private boolean pendingVpnStart = false;
+    private boolean vpnStarting = false;
+    private boolean statusReceiverRegistered = false;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Runnable vpnStartupTimeout = () -> {
+        if (!vpnStarting) {
+            return;
+        }
+        vpnStarting = false;
+        prefs.setEnable(false);
+        updateStartButton();
+        Toast.makeText(this, "VPN 启动超时，请重试", Toast.LENGTH_LONG).show();
+    };
+    private final BroadcastReceiver vpnStatusReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String status = intent.getStringExtra(TProxyService.EXTRA_STATUS);
+            if (status == null) {
+                return;
+            }
+            switch (status) {
+                case TProxyService.STATUS_STARTING:
+                    vpnStarting = true;
+                    break;
+                case TProxyService.STATUS_STARTED:
+                    mainHandler.removeCallbacks(vpnStartupTimeout);
+                    vpnStarting = false;
+                    prefs.setEnable(true);
+                    Toast.makeText(ProfileListActivity.this, "VPN 已启动", Toast.LENGTH_SHORT).show();
+                    break;
+                case TProxyService.STATUS_ERROR:
+                    mainHandler.removeCallbacks(vpnStartupTimeout);
+                    vpnStarting = false;
+                    prefs.setEnable(false);
+                    String error = intent.getStringExtra(TProxyService.EXTRA_ERROR);
+                    String message = error == null || error.trim().isEmpty()
+                            ? "VPN 启动失败"
+                            : "VPN 启动失败: " + error;
+                    Toast.makeText(ProfileListActivity.this, message, Toast.LENGTH_LONG).show();
+                    break;
+                case TProxyService.STATUS_STOPPED:
+                    mainHandler.removeCallbacks(vpnStartupTimeout);
+                    vpnStarting = false;
+                    prefs.setEnable(false);
+                    break;
+                default:
+                    return;
+            }
+            updateStartButton();
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -124,6 +179,29 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
         updateStartButton();
     }
 
+    @Override
+    protected void onStart() {
+        super.onStart();
+        if (!statusReceiverRegistered) {
+            ContextCompat.registerReceiver(
+                    this,
+                    vpnStatusReceiver,
+                    new IntentFilter(TProxyService.ACTION_STATUS),
+                    ContextCompat.RECEIVER_NOT_EXPORTED
+            );
+            statusReceiverRegistered = true;
+        }
+    }
+
+    @Override
+    protected void onStop() {
+        if (statusReceiverRegistered) {
+            unregisterReceiver(vpnStatusReceiver);
+            statusReceiverRegistered = false;
+        }
+        super.onStop();
+    }
+
     private void refreshProfileList() {
         List<Preferences.ProfileInfo> profiles = prefs.getProfileList();
         String selectedId = prefs.getCurrentProfileId();
@@ -131,6 +209,13 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
     }
 
     private void updateStartButton() {
+        if (vpnStarting) {
+            btnStart.setEnabled(false);
+            btnStart.setText("启动中...");
+            btnStart.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFFFF9800));
+            return;
+        }
+        btnStart.setEnabled(true);
         boolean isVpnRunning = prefs.getEnable();
         if (isVpnRunning) {
             btnStart.setText("停止");
@@ -177,6 +262,9 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
     }
 
     private void toggleVpn() {
+        if (vpnStarting) {
+            return;
+        }
         boolean isVpnRunning = prefs.getEnable();
 
         if (isVpnRunning) {
@@ -211,18 +299,28 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
     }
 
     private void doStartVpn() {
-        // 设置 enable 状态并启动 VPN 服务
-        prefs.setEnable(true);
-        Intent intent = new Intent(this, TProxyService.class);
-        startService(intent.setAction(TProxyService.ACTION_CONNECT));
-
-        // 更新 UI
+        vpnStarting = true;
+        prefs.setEnable(false);
         updateStartButton();
-        Toast.makeText(this, "VPN 已启动", Toast.LENGTH_SHORT).show();
+        mainHandler.removeCallbacks(vpnStartupTimeout);
+        mainHandler.postDelayed(vpnStartupTimeout, 60_000);
+
+        Intent intent = new Intent(this, TProxyService.class);
+        intent.setAction(TProxyService.ACTION_CONNECT);
+        try {
+            ContextCompat.startForegroundService(this, intent);
+        } catch (Exception error) {
+            mainHandler.removeCallbacks(vpnStartupTimeout);
+            vpnStarting = false;
+            prefs.setEnable(false);
+            updateStartButton();
+            Toast.makeText(this, "无法启动 VPN 服务: " + error.getMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 
     private void stopVpn() {
-        // 停止 VPN 服务
+        mainHandler.removeCallbacks(vpnStartupTimeout);
+        vpnStarting = false;
         prefs.setEnable(false);
         try {
             Intent intent = new Intent(this, TProxyService.class);
@@ -231,9 +329,7 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
             // 忽略服务停止异常
         }
 
-        // 更新 UI
         updateStartButton();
-        Toast.makeText(this, "VPN 已停止", Toast.LENGTH_SHORT).show();
     }
 
     @Override

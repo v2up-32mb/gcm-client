@@ -12,261 +12,354 @@ package com.gcm.client.app;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
+import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
-import android.content.Context;
-import android.os.Build;
-import android.os.ParcelFileDescriptor;
-import android.app.Notification;
-import android.app.Notification.Builder;
 import android.app.PendingIntent;
+import android.content.Context;
 import android.content.Intent;
-import android.net.VpnService;
-import gcm.Gcm;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.pm.ServiceInfo;
+import android.net.VpnService;
+import android.os.Build;
+import android.os.ParcelFileDescriptor;
+import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
 
+import gcm.Gcm;
+
 public class TProxyService extends VpnService {
-	private static native void TProxyStartService(String config_path, int fd);
-	private static native void TProxyStopService();
-	private static native long[] TProxyGetStats();
+    private static final String TAG = "TProxyService";
+    private static final String CHANNEL_ID = "socks5";
+    private static final int NOTIFICATION_ID = 1;
 
-        public static final String ACTION_CONNECT = "com.gcm.client.app.CONNECT";
-        public static final String ACTION_DISCONNECT = "com.gcm.client.app.DISCONNECT";
+    private static native boolean TProxyStartService(String configPath, int fd);
+    private static native boolean TProxyStopService();
+    private static native boolean TProxyIsRunning();
+    private static native long[] TProxyGetStats();
 
-	static {
-		System.loadLibrary("hev-socks5-tunnel");
-	}
+    public static final String ACTION_CONNECT = "com.gcm.client.app.CONNECT";
+    public static final String ACTION_DISCONNECT = "com.gcm.client.app.DISCONNECT";
+    public static final String ACTION_STATUS = "com.gcm.client.app.STATUS";
+    public static final String EXTRA_STATUS = "status";
+    public static final String EXTRA_ERROR = "error";
+    public static final String STATUS_STARTING = "starting";
+    public static final String STATUS_STARTED = "started";
+    public static final String STATUS_STOPPED = "stopped";
+    public static final String STATUS_ERROR = "error";
 
-	private ParcelFileDescriptor tunFd = null;
+    static {
+        System.loadLibrary("hev-socks5-tunnel");
+    }
+
+    private volatile ParcelFileDescriptor tunFd;
+    private volatile boolean starting;
+    private volatile boolean stopping;
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        initNotificationChannel();
+    }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_DISCONNECT.equals(intent.getAction())) {
-            stopService();
+            new Thread(this::stopService, "gcm-vpn-stop").start();
             return START_NOT_STICKY;
         }
-        if (tunFd != null) {
-            return START_STICKY;
+
+        synchronized (this) {
+            if (starting || tunFd != null) {
+                return START_STICKY;
+            }
+            starting = true;
+            stopping = false;
         }
-        startService();
+
+        new Preferences(this).setEnable(false);
+        startForegroundNotification("正在启动 VPN");
+        sendStatus(STATUS_STARTING, null);
+
+        new Thread(() -> {
+            try {
+                startVpn();
+            } finally {
+                starting = false;
+            }
+        }, "gcm-vpn-start").start();
         return START_STICKY;
     }
 
     @Override
     public void onDestroy() {
+        if (!stopping) {
+            cleanupRuntime();
+            new Preferences(this).setEnable(false);
+            sendStatus(STATUS_STOPPED, null);
+        }
         super.onDestroy();
     }
 
-	@Override
-	public void onRevoke() {
-		stopService();
-		super.onRevoke();
-	}
+    @Override
+    public void onRevoke() {
+        stopService();
+        super.onRevoke();
+    }
 
-    public void startService() {
-        if (tunFd != null) { return; }
-
-		Preferences prefs = new Preferences(this);
-
-		/* VPN */
-		String session = new String();
-        VpnService.Builder builder = new VpnService.Builder();
-		builder.setBlocking(false);
-		builder.setMtu(prefs.getTunnelMtu());
-		if (prefs.getIpv4()) {
-			String addr = prefs.getTunnelIpv4Address();
-			int prefix = prefs.getTunnelIpv4Prefix();
-			String dns = prefs.getDnsIpv4();
-			builder.addAddress(addr, prefix);
-			builder.addRoute("0.0.0.0", 0);
-			if (!prefs.getRemoteDns() && !dns.isEmpty())
-			  builder.addDnsServer(dns);
-			session += "IPv4";
-		}
-		if (prefs.getIpv6()) {
-			String addr = prefs.getTunnelIpv6Address();
-			int prefix = prefs.getTunnelIpv6Prefix();
-			String dns = prefs.getDnsIpv6();
-			builder.addAddress(addr, prefix);
-			builder.addRoute("::", 0);
-			if (!prefs.getRemoteDns() && !dns.isEmpty())
-			  builder.addDnsServer(dns);
-			if (!session.isEmpty())
-			  session += " + ";
-			session += "IPv6";
-		}
-		if (prefs.getRemoteDns()) {
-			builder.addDnsServer(prefs.getMappedDns());
-		}
-		boolean disallowSelf = true;
-		if (prefs.getGlobal()) {
-			session += "/Global";
-		} else {
-			for (String appName : prefs.getApps()) {
-				try {
-					builder.addAllowedApplication(appName);
-					disallowSelf = false;
-				} catch (NameNotFoundException e) {
-				}
-			}
-			session += "/per-App";
-		}
-		if (disallowSelf) {
-			String selfName = getApplicationContext().getPackageName();
-			try {
-				builder.addDisallowedApplication(selfName);
-			} catch (NameNotFoundException e) {
-			}
-		}
-		builder.setSession(session);
+    private void startVpn() {
+        Preferences prefs = new Preferences(this);
         try {
+            VpnService.Builder builder = buildVpnInterface(prefs);
             tunFd = builder.establish();
-        } catch (Exception e) {
-            prefs.setEnable(false);
-            stopSelf();
-            return;
+            if (tunFd == null) {
+                throw new IllegalStateException("系统未能建立 VPN 接口");
+            }
+
+            File configFile = writeTProxyConfig(prefs);
+            startGcm(prefs);
+
+            if (!TProxyStartService(configFile.getAbsolutePath(), tunFd.getFd())) {
+                throw new IllegalStateException("hev-socks5-tunnel 启动失败");
+            }
+            Thread.sleep(200);
+            if (!TProxyIsRunning()) {
+                throw new IllegalStateException("hev-socks5-tunnel 未进入运行状态");
+            }
+
+            prefs.setEnable(true);
+            updateNotification("VPN 已连接");
+            sendStatus(STATUS_STARTED, null);
+            monitorNativeTunnel(prefs);
+        } catch (Throwable error) {
+            failStartup(prefs, error);
         }
-        if (tunFd == null) {
-            // VPN 权限未授权或 establish 失败，回滚 enable 状态
-            prefs.setEnable(false);
-            stopSelf();
-            return;
-        }
-
-                // 生成 TProxy 配置并启动原生隧道（VPN）
-                File tproxy_file = new File(getCacheDir(), "tproxy.conf");
-                try {
-                        tproxy_file.createNewFile();
-                        FileOutputStream fos = new FileOutputStream(tproxy_file, false);
-
-                        String tproxy_conf = "misc:\n" +
-                                "  task-stack-size: " + prefs.getTaskStackSize() + "\n" +
-                                "tunnel:\n" +
-                                "  mtu: " + prefs.getTunnelMtu() + "\n";
-
-                        tproxy_conf += "socks5:\n" +
-                                "  port: " + prefs.getSocksPort() + "\n" +
-                                "  address: '" + prefs.getSocksAddress() + "'\n" +
-                                "  udp: '" + (prefs.getUdpInTcp() ? "tcp" : "udp") + "'\n";
-
-                        if (!prefs.getSocksUdpAddress().isEmpty()) {
-                                tproxy_conf += "  udp-address: '" + prefs.getSocksUdpAddress() + "'\n";
-                        }
-
-                        if (!prefs.getSocksUsername().isEmpty() &&
-                                !prefs.getSocksPassword().isEmpty()) {
-                                tproxy_conf += "  username: '" + prefs.getSocksUsername() + "'\n";
-                                tproxy_conf += "  password: '" + prefs.getSocksPassword() + "'\n";
-                        }
-
-                        if (prefs.getRemoteDns()) {
-                                tproxy_conf += "mapdns:\n" +
-                                        "  address: " + prefs.getMappedDns() + "\n" +
-                                        "  port: 53\n" +
-                                        "  network: 240.0.0.0\n" +
-                                        "  netmask: 240.0.0.0\n" +
-                                        "  cache-size: 10000\n";
-                        }
-
-                        fos.write(tproxy_conf.getBytes());
-                        fos.close();
-                } catch (IOException e) {
-                        return;
-                }
-                
-                // Start TProxy Native Service
-                TProxyStartService(tproxy_file.getAbsolutePath(), tunFd.getFd());
-
-                // 同时启动本地 SOCKS5（127.0.0.1:port）并桥接到远端 Worker
-                try {
-                        String workerHost = prefs.getWorkerHost().trim();
-                        if (workerHost.startsWith("wss://")) {
-                                workerHost = workerHost.substring(6);
-                        } else if (workerHost.startsWith("https://")) {
-                                workerHost = workerHost.substring(8);
-                        }
-                        workerHost = workerHost.replaceAll("/+$", ""); // 去掉末尾 /
-                        // relay 字段使用优选中转节点（PREF_IP）：逗号分隔多个 IP:端口，
-                        // 由 Go 库在建立 WSS 时作为 TCP 中继点，TLS SNI 仍为 workerHost。
-                        // fip 字段为出口代理 IP（FALLBACK_IP）：作为 ?fallbackip= 查询参数透传给 Worker。
-                        // 字段映射对齐 GCM 主分支：
-                        //   PREF_IP   → relayIPs（优选中转节点列表）
-                        //   FALLBACK_IP → proxyIP（出口代理 IP）
-                        //   ECH_DOMAIN → echDomain（ECH 查询域名）
-                        //   ECH_DNS    → dohURL（DoH 服务器，空则使用 GCM 内置备用列表）
-                        //   disable_ech=true → enableECH=false（回落标准 TLS 1.3）
-                        Gcm.startSocksProxy(
-                                prefs.getSocksAddress() + ":" + Integer.toString(prefs.getSocksPort()),
-                                workerHost,
-                                prefs.getWsConn(),
-                                prefs.getPrefIp(),
-                                prefs.getUserID(),
-                                prefs.getFallbackIp(),
-                                prefs.getEchDomain(),   // echDomain
-                                prefs.getEchDns(),       // dohURL
-                                !prefs.getDisableEch(),  // enableECH = !disableEch
-                                prefs.getDisableIpv6Route(),
-                                prefs.getEnableDnsWarmup(),  // enableDNSWarmup
-                                true  // verbose 日志
-                        );
-                } catch (Exception e) {
-                        try { TProxyStopService(); } catch (Throwable t) {}
-                        try { if (tunFd != null) { tunFd.close(); tunFd = null; } } catch (IOException ioe) {}
-                        stopSelf();
-                        return;
-                }
-                prefs.setEnable(true);
-
-		String channelName = "socks5";
-		initNotificationChannel(channelName);
-		createNotification(channelName);
-	}
-
-    public void stopService() {
-        try { stopForeground(true); } catch (Throwable t) { }
-        try { Gcm.stopSocksProxy(); } catch (Exception e) { }
-        try { TProxyStopService(); } catch (Throwable t) { }
-        if (tunFd != null) {
-            try { tunFd.close(); } catch (IOException e) {}
-            tunFd = null;
-        }
-        System.exit(0);
     }
 
-    private void runWithTimeout(Runnable task, long timeoutMs, String name) {
-        Thread th = new Thread(task, name);
-        th.start();
-        try { th.join(timeoutMs); } catch (InterruptedException ignored) {}
+    private VpnService.Builder buildVpnInterface(Preferences prefs) throws NameNotFoundException {
+        String session = "";
+        VpnService.Builder builder = new VpnService.Builder();
+        builder.setBlocking(false);
+        builder.setMtu(prefs.getTunnelMtu());
+
+        if (prefs.getIpv4()) {
+            builder.addAddress(prefs.getTunnelIpv4Address(), prefs.getTunnelIpv4Prefix());
+            builder.addRoute("0.0.0.0", 0);
+            if (!prefs.getRemoteDns() && !prefs.getDnsIpv4().isEmpty()) {
+                builder.addDnsServer(prefs.getDnsIpv4());
+            }
+            session += "IPv4";
+        }
+        if (prefs.getIpv6() && !prefs.getDisableIpv6Route()) {
+            builder.addAddress(prefs.getTunnelIpv6Address(), prefs.getTunnelIpv6Prefix());
+            builder.addRoute("::", 0);
+            if (!prefs.getRemoteDns() && !prefs.getDnsIpv6().isEmpty()) {
+                builder.addDnsServer(prefs.getDnsIpv6());
+            }
+            if (!session.isEmpty()) {
+                session += " + ";
+            }
+            session += "IPv6";
+        }
+        if (prefs.getRemoteDns()) {
+            builder.addDnsServer(prefs.getMappedDns());
+        }
+
+        boolean disallowSelf = true;
+        if (prefs.getGlobal()) {
+            session += "/Global";
+        } else {
+            for (String appName : prefs.getApps()) {
+                try {
+                    builder.addAllowedApplication(appName);
+                    disallowSelf = false;
+                } catch (NameNotFoundException ignored) {
+                }
+            }
+            session += "/per-App";
+        }
+        if (disallowSelf) {
+            builder.addDisallowedApplication(getApplicationContext().getPackageName());
+        }
+        builder.setSession(session);
+        return builder;
     }
 
-	private void createNotification(String channelName) {
-		Intent i = new Intent(this, ProfileListActivity.class);
-		i.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-		PendingIntent pi = PendingIntent.getActivity(this, 0, i, PendingIntent.FLAG_IMMUTABLE);
-		NotificationCompat.Builder notification = new NotificationCompat.Builder(this, channelName);
-		Notification notify = notification
-				.setContentTitle(getString(R.string.app_name))
-				.setSmallIcon(android.R.drawable.sym_def_app_icon)
-				.setContentIntent(pi)
-				.build();
-		if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-			startForeground(1, notify);
-		} else {
-			startForeground(1, notify, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
-		}
-	}
+    private File writeTProxyConfig(Preferences prefs) throws IOException {
+        File configFile = new File(getCacheDir(), "tproxy.conf");
+        StringBuilder config = new StringBuilder()
+                .append("misc:\n")
+                .append("  task-stack-size: ").append(prefs.getTaskStackSize()).append("\n")
+                .append("tunnel:\n")
+                .append("  mtu: ").append(prefs.getTunnelMtu()).append("\n")
+                .append("socks5:\n")
+                .append("  port: ").append(prefs.getSocksPort()).append("\n")
+                .append("  address: '").append(prefs.getSocksAddress()).append("'\n")
+                .append("  udp: '").append(prefs.getUdpInTcp() ? "tcp" : "udp").append("'\n");
 
-	// create NotificationChannel
-	private void initNotificationChannel(String channelName) {
-		NotificationManager notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-			CharSequence name = getString(R.string.app_name);
-			NotificationChannel channel = new NotificationChannel(channelName, name, NotificationManager.IMPORTANCE_DEFAULT);
-			notificationManager.createNotificationChannel(channel);
-		}
-	}
+        if (!prefs.getSocksUdpAddress().isEmpty()) {
+            config.append("  udp-address: '").append(prefs.getSocksUdpAddress()).append("'\n");
+        }
+        if (!prefs.getSocksUsername().isEmpty() && !prefs.getSocksPassword().isEmpty()) {
+            config.append("  username: '").append(prefs.getSocksUsername()).append("'\n");
+            config.append("  password: '").append(prefs.getSocksPassword()).append("'\n");
+        }
+        if (prefs.getRemoteDns()) {
+            config.append("mapdns:\n")
+                    .append("  address: ").append(prefs.getMappedDns()).append("\n")
+                    .append("  port: 53\n")
+                    .append("  network: 240.0.0.0\n")
+                    .append("  netmask: 240.0.0.0\n")
+                    .append("  cache-size: 10000\n");
+        }
+
+        try (FileOutputStream output = new FileOutputStream(configFile, false)) {
+            output.write(config.toString().getBytes(StandardCharsets.UTF_8));
+        }
+        return configFile;
+    }
+
+    private void startGcm(Preferences prefs) throws Exception {
+        String workerHost = prefs.getWorkerHost().trim();
+        if (workerHost.startsWith("wss://")) {
+            workerHost = workerHost.substring(6);
+        } else if (workerHost.startsWith("https://")) {
+            workerHost = workerHost.substring(8);
+        }
+        workerHost = workerHost.replaceAll("/+$", "");
+
+        Gcm.startSocksProxy(
+                prefs.getSocksAddress() + ":" + prefs.getSocksPort(),
+                workerHost,
+                prefs.getWsConn(),
+                prefs.getPrefIp(),
+                prefs.getUserID(),
+                prefs.getFallbackIp(),
+                prefs.getEchDomain(),
+                prefs.getEchDns(),
+                !prefs.getDisableEch(),
+                prefs.getDisableIpv6Route(),
+                prefs.getEnableDnsWarmup(),
+                true
+        );
+    }
+
+    private void failStartup(Preferences prefs, Throwable error) {
+        String message = error.getMessage();
+        if (message == null || message.trim().isEmpty()) {
+            message = error.getClass().getSimpleName();
+        }
+        Log.e(TAG, "VPN startup failed: " + message, error);
+        stopping = true;
+        cleanupRuntime();
+        prefs.setEnable(false);
+        sendStatus(STATUS_ERROR, message);
+        stopForeground(true);
+        stopSelf();
+    }
+
+    private void monitorNativeTunnel(Preferences prefs) {
+        new Thread(() -> {
+            while (!stopping && prefs.getEnable()) {
+                try {
+                    Thread.sleep(1_000);
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                if (!stopping && !TProxyIsRunning()) {
+                    failStartup(prefs, new IllegalStateException("hev-socks5-tunnel 意外停止"));
+                    return;
+                }
+            }
+        }, "gcm-vpn-monitor").start();
+    }
+
+    private void stopService() {
+        synchronized (this) {
+            if (stopping) {
+                return;
+            }
+            stopping = true;
+        }
+        cleanupRuntime();
+        new Preferences(this).setEnable(false);
+        sendStatus(STATUS_STOPPED, null);
+        stopForeground(true);
+        stopSelf();
+    }
+
+    private void cleanupRuntime() {
+        try {
+            TProxyStopService();
+        } catch (Throwable error) {
+            Log.w(TAG, "Failed to stop native tunnel", error);
+        }
+        try {
+            Gcm.stopSocksProxy();
+        } catch (Throwable error) {
+            Log.w(TAG, "Failed to stop GCM proxy", error);
+        }
+        ParcelFileDescriptor currentTunFd = tunFd;
+        tunFd = null;
+        if (currentTunFd != null) {
+            try {
+                currentTunFd.close();
+            } catch (IOException error) {
+                Log.w(TAG, "Failed to close TUN fd", error);
+            }
+        }
+    }
+
+    private void sendStatus(String status, String error) {
+        Intent intent = new Intent(ACTION_STATUS);
+        intent.setPackage(getPackageName());
+        intent.putExtra(EXTRA_STATUS, status);
+        if (error != null) {
+            intent.putExtra(EXTRA_ERROR, error);
+        }
+        sendBroadcast(intent);
+    }
+
+    private Notification buildNotification(String statusText) {
+        Intent intent = new Intent(this, ProfileListActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE);
+        return new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle(getString(R.string.app_name))
+                .setContentText(statusText)
+                .setSmallIcon(android.R.drawable.sym_def_app_icon)
+                .setContentIntent(pendingIntent)
+                .setOngoing(true)
+                .build();
+    }
+
+    private void startForegroundNotification(String statusText) {
+        Notification notification = buildNotification(statusText);
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, notification);
+        } else {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        }
+    }
+
+    private void updateNotification(String statusText) {
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        manager.notify(NOTIFICATION_ID, buildNotification(statusText));
+    }
+
+    private void initNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            NotificationChannel channel = new NotificationChannel(
+                    CHANNEL_ID,
+                    getString(R.string.app_name),
+                    NotificationManager.IMPORTANCE_LOW
+            );
+            manager.createNotificationChannel(channel);
+        }
+    }
 }
