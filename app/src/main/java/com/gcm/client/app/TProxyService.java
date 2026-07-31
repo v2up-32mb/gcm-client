@@ -126,10 +126,13 @@ public class TProxyService extends VpnService {
         try {
             tunFd = builder.establish();
         } catch (Exception e) {
+            prefs.setEnable(false);
             stopSelf();
             return;
         }
         if (tunFd == null) {
+            // VPN 权限未授权或 establish 失败，回滚 enable 状态
+            prefs.setEnable(false);
             stopSelf();
             return;
         }

@@ -43,6 +43,7 @@ import java.util.Set;
 import java.util.UUID;
 
 public class ProfileListActivity extends Activity implements ProfileAdapter.OnProfileActionListener {
+    private static final int REQUEST_VPN = 0;
     private static final int REQUEST_SCAN_QR = 1001;
 
     private MaterialToolbar toolbar;
@@ -51,6 +52,7 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
     private Button btnStart;
     private FloatingActionButton fabMain;
     private Preferences prefs;
+    private boolean pendingVpnStart = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -112,11 +114,6 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
         // 更新启动按钮状态
         updateStartButton();
 
-        // 请求 VPN 权限
-        Intent intent = VpnService.prepare(this);
-        if (intent != null) {
-            startActivityForResult(intent, 0);
-        }
     }
 
     @Override
@@ -201,7 +198,20 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
             return;
         }
 
-        // 启动 VPN 服务
+        // 检查 VPN 权限授权状态
+        Intent prepareIntent = VpnService.prepare(this);
+        if (prepareIntent != null) {
+            // 需要用户授权，保存待启动状态，授权返回后在 onActivityResult 中启动
+            pendingVpnStart = true;
+            startActivityForResult(prepareIntent, REQUEST_VPN);
+        } else {
+            // 已授权，直接启动
+            doStartVpn();
+        }
+    }
+
+    private void doStartVpn() {
+        // 设置 enable 状态并启动 VPN 服务
         prefs.setEnable(true);
         Intent intent = new Intent(this, TProxyService.class);
         startService(intent.setAction(TProxyService.ACTION_CONNECT));
@@ -214,8 +224,12 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
     private void stopVpn() {
         // 停止 VPN 服务
         prefs.setEnable(false);
-        Intent intent = new Intent(this, TProxyService.class);
-        startService(intent.setAction(TProxyService.ACTION_DISCONNECT));
+        try {
+            Intent intent = new Intent(this, TProxyService.class);
+            startService(intent.setAction(TProxyService.ACTION_DISCONNECT));
+        } catch (Exception e) {
+            // 忽略服务停止异常
+        }
 
         // 更新 UI
         updateStartButton();
@@ -499,6 +513,16 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == REQUEST_VPN) {
+            if (result == RESULT_OK && pendingVpnStart) {
+                pendingVpnStart = false;
+                doStartVpn();
+            } else {
+                pendingVpnStart = false;
+                Toast.makeText(this, "VPN 权限被拒绝", Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
         if (request == REQUEST_SCAN_QR) {
             if (result == RESULT_OK && data != null) {
                 String scannedText = data.getStringExtra(com.google.zxing.client.android.Intents.Scan.RESULT);

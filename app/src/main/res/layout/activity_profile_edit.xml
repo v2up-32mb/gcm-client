@@ -29,7 +29,7 @@
         <EditText android:id="@+id/worker_host"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="gcm.ics.de5.net"
+            android:hint="wss://example.com"
             android:singleLine="true"/>
 
         <!-- 优选 IP -->
@@ -53,7 +53,7 @@
         <EditText android:id="@+id/user_id"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="v2up"
+            android:hint="用户ID"
             android:singleLine="true"/>
 
         <!-- 出口代理 IP -->
