@@ -207,6 +207,7 @@ public class TProxyService extends VpnService {
                                 prefs.getEchDns(),       // dohURL
                                 !prefs.getDisableEch(),  // enableECH = !disableEch
                                 prefs.getDisableIpv6Route(),
+                                prefs.getEnableDnsWarmup(),  // enableDNSWarmup
                                 true  // verbose 日志
                         );
                 } catch (Exception e) {

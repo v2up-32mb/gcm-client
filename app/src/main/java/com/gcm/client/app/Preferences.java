@@ -40,6 +40,7 @@ public class Preferences
         public static final String ECH_DNS = "EchDns";
         public static final String ECH_DOMAIN = "EchDomain";
         public static final String DISABLE_ECH = "DisableEch";
+        public static final String ENABLE_DNS_WARMUP = "EnableDnsWarmup";
         public static final String WS_CONN = "WsConn";
         // IPv6 路由禁用
         public static final String DISABLE_IPV6_ROUTE = "DisableIpv6Route";
@@ -116,7 +117,7 @@ public class Preferences
             editor.remove(PROFILE_NAME_PREFIX + id);
             
             // Clean up all keys for this profile
-            String[] keys = {WORKER_HOST, PREF_IP, FALLBACK_IP, USER_ID, ECH_DNS, ECH_DOMAIN, DISABLE_ECH, WS_CONN, DISABLE_IPV6_ROUTE};
+            String[] keys = {WORKER_HOST, PREF_IP, FALLBACK_IP, USER_ID, ECH_DNS, ECH_DOMAIN, DISABLE_ECH, ENABLE_DNS_WARMUP, WS_CONN, DISABLE_IPV6_ROUTE};
             for (String k : keys) {
                 editor.remove(k + "_" + id);
             }
@@ -287,7 +288,7 @@ public class Preferences
 
         // ECH DoH 服务器（查询 ECH 公钥用）
         public String getEchDns() {
-                return prefs.getString(getKey(ECH_DNS), "dns.alidns.com/dns-query");
+                return prefs.getString(getKey(ECH_DNS), "doh.pub");
         }
 
         public void setEchDns(String addr) {
@@ -315,6 +316,17 @@ public class Preferences
         public void setDisableEch(boolean disable) {
                 SharedPreferences.Editor editor = prefs.edit();
                 editor.putBoolean(getKey(DISABLE_ECH), disable);
+                editor.commit();
+        }
+
+        // DNS 预热开关（默认关闭）
+        public boolean getEnableDnsWarmup() {
+                return prefs.getBoolean(getKey(ENABLE_DNS_WARMUP), false);
+        }
+
+        public void setEnableDnsWarmup(boolean enable) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putBoolean(getKey(ENABLE_DNS_WARMUP), enable);
                 editor.commit();
         }
 

@@ -37,6 +37,7 @@ public class ProfileEditActivity extends Activity {
     private EditText edittext_ech_domain;
     private EditText edittext_ws_conn;
     private CheckBox checkbox_disable_ech;
+    private CheckBox checkbox_enable_dns_warmup;
     private CheckBox checkbox_disable_ipv6_route;
     private Button btn_import;
     private Button btn_save;
@@ -69,6 +70,7 @@ public class ProfileEditActivity extends Activity {
         edittext_ech_domain = findViewById(R.id.ech_domain);
         edittext_ws_conn = findViewById(R.id.ws_conn);
         checkbox_disable_ech = findViewById(R.id.disable_ech);
+        checkbox_enable_dns_warmup = findViewById(R.id.enable_dns_warmup);
         checkbox_disable_ipv6_route = findViewById(R.id.disable_ipv6_route);
         btn_import = findViewById(R.id.btn_import);
         btn_save = findViewById(R.id.btn_save);
@@ -106,6 +108,7 @@ public class ProfileEditActivity extends Activity {
         edittext_ech_domain.setText(prefs.getEchDomain());
         edittext_ws_conn.setText(String.valueOf(prefs.getWsConn()));
         checkbox_disable_ech.setChecked(prefs.getDisableEch());
+        checkbox_enable_dns_warmup.setChecked(prefs.getEnableDnsWarmup());
         checkbox_disable_ipv6_route.setChecked(prefs.getDisableIpv6Route());
 
         // 恢复原配置
@@ -126,6 +129,7 @@ public class ProfileEditActivity extends Activity {
             edittext_ech_domain.setEnabled(false);
             edittext_ws_conn.setEnabled(false);
             checkbox_disable_ech.setEnabled(false);
+            checkbox_enable_dns_warmup.setEnabled(false);
             checkbox_disable_ipv6_route.setEnabled(false);
             btn_save.setEnabled(false);
 
@@ -192,6 +196,7 @@ public class ProfileEditActivity extends Activity {
         }
 
         prefs.setDisableEch(checkbox_disable_ech.isChecked());
+        prefs.setEnableDnsWarmup(checkbox_enable_dns_warmup.isChecked());
         prefs.setDisableIpv6Route(checkbox_disable_ipv6_route.isChecked());
 
         // 恢复原配置

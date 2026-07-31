@@ -27,7 +27,7 @@ var (
 )
 
 // StartSocksProxy 启动 GCM 代理（gomobile AAR 入口）
-func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID, proxyIP, echDomain, dohURL string, enableECH, disableIPv6Route, verbose bool) error {
+func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID, proxyIP, echDomain, dohURL string, enableECH, disableIPv6Route, enableDNSWarmup, verbose bool) error {
 	_ = disableIPv6Route
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
@@ -55,8 +55,11 @@ func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID
 	if echDomain != "" {
 		c.ECHDomain = echDomain
 	}
-	if dohURL != "" {
+	// DoH 服务器：dohURL 非空用用户的；为空默认 doh.pub
+	if dohURL = strings.TrimSpace(dohURL); dohURL != "" {
 		c.DoHUrl = dohURL
+	} else {
+		c.DoHUrl = "doh.pub"
 	}
 	c.EnableECH = enableECH
 	if verbose {
@@ -65,7 +68,8 @@ func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID
 		c.LogLevel = config.INFO
 	}
 	c.EnableLogFile = false
-	c.EnableDNSWarmup = false
+	// 默认关闭 DNS 预热以避免冷启动冲突；可由 UI 开关启用
+	c.EnableDNSWarmup = enableDNSWarmup
 	c.EnableQualityMonitor = true
 
 	logger.InitGlobalLogger(c)
