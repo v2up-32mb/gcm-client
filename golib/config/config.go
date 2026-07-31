@@ -191,7 +191,7 @@ func parseByteSize(s string) (int64, error) {
 	// 检查整数溢出
 	result := num * float64(multiplier)
 	if result > float64(math.MaxInt64) {
-		return 0, fmt.Errorf("字节大小超出范围: %s (最大支持 %d 字节)", s, math.MaxInt64)
+		return 0, fmt.Errorf("字节大小超出范围: %s (最大支持 %d 字节)", s, int64(math.MaxInt64))
 	}
 
 	return int64(result), nil
