@@ -37,7 +37,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:textSize="12sp"
-            android:textColor="#757575"
+            android:textColor="@color/secondary_text"
             android:paddingBottom="8dp"/>
 
         <Button android:id="@+id/button_apps"
@@ -45,6 +45,51 @@
             android:layout_height="wrap_content"
             android:text="选择应用"
             android:backgroundTint="#9C27B0"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingTop="20dp"
+            android:paddingBottom="8dp"
+            android:text="@string/bypass_routes"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <CheckBox
+            android:id="@+id/checkbox_bypass_private"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/bypass_private" />
+
+        <CheckBox
+            android:id="@+id/checkbox_bypass_geoip_cn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/bypass_geoip_cn" />
+
+        <CheckBox
+            android:id="@+id/checkbox_bypass_geosite_cn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/bypass_geosite_cn" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingTop="12dp"
+            android:text="@string/manual_bypass_rules"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/edittext_bypass_rules"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="top|start"
+            android:hint="@string/manual_bypass_rules_hint"
+            android:inputType="textMultiLine|textNoSuggestions"
+            android:minLines="4"
+            android:maxLines="10"
+            android:scrollbars="vertical" />
 
         <!-- 本地代理端口 -->
         <TextView android:text="本地代理端口"

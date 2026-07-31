@@ -31,6 +31,14 @@ public class Preferences
         public static final String REMOTE_DNS = "RemoteDNS";
         public static final String APPS = "Apps";
         public static final String ENABLE = "Enable";
+        public static final String THEME_MODE = "ThemeMode";
+        public static final int THEME_SYSTEM = 0;
+        public static final int THEME_LIGHT = 1;
+        public static final int THEME_DARK = 2;
+        public static final String BYPASS_PRIVATE = "BypassPrivate";
+        public static final String BYPASS_GEOIP_CN = "BypassGeoIpCn";
+        public static final String BYPASS_GEOSITE_CN = "BypassGeoSiteCn";
+        public static final String BYPASS_RULES = "BypassRules";
 
         // GCM tunnel 相关参数
         public static final String WORKER_HOST = "WorkerHost";
@@ -209,6 +217,49 @@ public class Preferences
 		SharedPreferences.Editor editor = prefs.edit();
 		editor.putBoolean(ENABLE, enable);
 		editor.commit();
+	}
+
+	public int getThemeMode() {
+		return prefs.getInt(THEME_MODE, THEME_SYSTEM);
+	}
+
+	public void setThemeMode(int mode) {
+		if (mode != THEME_LIGHT && mode != THEME_DARK) {
+			mode = THEME_SYSTEM;
+		}
+		prefs.edit().putInt(THEME_MODE, mode).apply();
+	}
+
+	public boolean getBypassPrivate() {
+		return prefs.getBoolean(BYPASS_PRIVATE, false);
+	}
+
+	public void setBypassPrivate(boolean enabled) {
+		prefs.edit().putBoolean(BYPASS_PRIVATE, enabled).apply();
+	}
+
+	public boolean getBypassGeoIpCn() {
+		return prefs.getBoolean(BYPASS_GEOIP_CN, false);
+	}
+
+	public void setBypassGeoIpCn(boolean enabled) {
+		prefs.edit().putBoolean(BYPASS_GEOIP_CN, enabled).apply();
+	}
+
+	public boolean getBypassGeoSiteCn() {
+		return prefs.getBoolean(BYPASS_GEOSITE_CN, false);
+	}
+
+	public void setBypassGeoSiteCn(boolean enabled) {
+		prefs.edit().putBoolean(BYPASS_GEOSITE_CN, enabled).apply();
+	}
+
+	public String getBypassRules() {
+		return prefs.getString(BYPASS_RULES, "");
+	}
+
+	public void setBypassRules(String rules) {
+		prefs.edit().putString(BYPASS_RULES, rules).apply();
 	}
 
 	public int getTunnelMtu() {

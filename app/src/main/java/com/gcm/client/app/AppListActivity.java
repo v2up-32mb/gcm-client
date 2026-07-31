@@ -20,7 +20,6 @@ import java.util.ArrayList;
 
 import android.Manifest;
 import android.os.Bundle;
-import android.app.ListActivity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.LayoutInflater;
@@ -36,10 +35,12 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageInfo;
 import android.content.pm.ApplicationInfo;
+import androidx.appcompat.app.AppCompatActivity;
 
-public class AppListActivity extends ListActivity {
+public class AppListActivity extends AppCompatActivity {
 	private Preferences prefs;
 	private AppArrayAdapter adapter;
+	private ListView listView;
 	private boolean isChanged = false;
 
 	private class Package {
@@ -142,8 +143,10 @@ public class AppListActivity extends ListActivity {
 	@Override
 	public void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
+		setContentView(R.layout.activity_app_list);
 
-		getListView().setChoiceMode(ListView.CHOICE_MODE_MULTIPLE);
+		listView = findViewById(R.id.app_list);
+		listView.setChoiceMode(ListView.CHOICE_MODE_MULTIPLE);
 
 		prefs = new Preferences(this);
 		Set<String> apps = prefs.getApps();
@@ -163,11 +166,7 @@ public class AppListActivity extends ListActivity {
 			adapter.add(pkg);
 		}
 
-		EditText searchBox = new EditText(this);
-		searchBox.setHint("搜索应用");
-		int pad = (int) (8 * getResources().getDisplayMetrics().density);
-		searchBox.setPadding(pad, pad, pad, pad);
-		getListView().addHeaderView(searchBox, null, false);
+		EditText searchBox = findViewById(R.id.search_apps);
 
 		adapter.sort(new Comparator<Package>() {
 			public int compare(Package a, Package b) {
@@ -177,7 +176,16 @@ public class AppListActivity extends ListActivity {
 			}
 		});
 
-		setListAdapter(adapter);
+		listView.setAdapter(adapter);
+		listView.setOnItemClickListener((parent, view, position, id) -> {
+			Package pkg = adapter.getItem(position);
+			pkg.selected = !pkg.selected;
+			CheckBox checkbox = view.findViewById(R.id.checked);
+			if (checkbox != null) {
+				checkbox.setChecked(pkg.selected);
+			}
+			isChanged = true;
+		});
 
 		searchBox.addTextChangedListener(new TextWatcher() {
 			@Override
@@ -209,17 +217,4 @@ public class AppListActivity extends ListActivity {
 		super.onDestroy();
 	}
 
-	@Override
-	protected void onListItemClick(ListView l, View v, int position, long id) {
-		int headers = l.getHeaderViewsCount();
-		int adjPos = position - headers;
-		if (adjPos < 0)
-			return;
-		Package pkg = adapter.getItem(adjPos);
-		pkg.selected = !pkg.selected;
-		CheckBox checkbox = (CheckBox) v.findViewById(R.id.checked);
-		if (checkbox != null)
-			checkbox.setChecked(pkg.selected);
-		isChanged = true;
-	}
 }

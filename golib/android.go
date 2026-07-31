@@ -12,6 +12,7 @@ import (
 	"gcm/logger"
 	"gcm/pool"
 	"gcm/relay"
+	"gcm/routing"
 	"gcm/socks5"
 )
 
@@ -27,7 +28,7 @@ var (
 )
 
 // StartSocksProxy 启动 GCM 代理（gomobile AAR 入口）
-func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID, proxyIP, echDomain, dohURL string, enableECH, disableIPv6Route, enableDNSWarmup, verbose bool) error {
+func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID, proxyIP, echDomain, dohURL string, enableECH, disableIPv6Route, enableDNSWarmup, bypassPrivate, bypassGeoIPCN, bypassGeoSiteCN bool, bypassRules string, verbose bool) error {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
 	if socks5Server != nil {
@@ -37,6 +38,10 @@ func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID
 	c, err := buildConfig(listenAddr, workerHost, wsConn, relayIPs, userID, proxyIP, echDomain, dohURL, enableECH, disableIPv6Route, enableDNSWarmup, verbose)
 	if err != nil {
 		return err
+	}
+	bypassMatcher, err := routing.NewMatcher(bypassPrivate, bypassGeoIPCN, bypassGeoSiteCN, bypassRules)
+	if err != nil {
+		return fmt.Errorf("invalid bypass rules: %w", err)
 	}
 
 	logger.InitGlobalLogger(c)
@@ -89,6 +94,7 @@ func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID
 		}()
 	}
 	s := socks5.NewServer(c, p, dc)
+	s.SetBypassMatcher(bypassMatcher)
 	if err := s.Start(); err != nil {
 		p.Close()
 		rm.Close()
@@ -102,6 +108,12 @@ func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID
 	cfg, dohClient, dnsCache, relayManager, echManager, connPool, socks5Server = c, d, dc, rm, em, p, s
 	systemLog.Info("GCM 已就绪")
 	return nil
+}
+
+// ValidateBypassRules validates newline-separated manual routing rules without
+// starting the proxy. It is exported for the Android settings screen.
+func ValidateBypassRules(rules string) error {
+	return routing.ValidateManualRules(rules)
 }
 
 func buildConfig(listenAddr, workerHost string, wsConn int, relayIPs, userID, proxyIP, echDomain, dohURL string, enableECH, disableIPv6Route, enableDNSWarmup, verbose bool) (*config.Config, error) {

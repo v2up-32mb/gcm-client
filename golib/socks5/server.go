@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 	"gcm/logger"
 	"gcm/pool"
 	"gcm/protocol"
+	"gcm/routing"
 	"github.com/gorilla/websocket"
 )
 
@@ -35,8 +37,15 @@ type Server struct {
 	log           *logger.Logger
 	pool          *pool.ConnectionPool
 	dnsCache      *dns.DNSCache
+	bypassMatcher *routing.Matcher
 	server        net.Listener
 	activeTunnels int32
+}
+
+// SetBypassMatcher configures destinations that should use a direct socket
+// instead of a GCM WebSocket stream.
+func (s *Server) SetBypassMatcher(matcher *routing.Matcher) {
+	s.bypassMatcher = matcher
 }
 
 // NewServer 创建 SOCKS5 服务器
@@ -246,6 +255,11 @@ func (s *Server) handleRequest(conn net.Conn) (originalHost, resolvedHost string
 // originalHost: 原始主机名（用于日志显示）
 // resolvedHost: 解析后的主机（用于实际连接）
 func (s *Server) createTunnel(clientConn net.Conn, originalHost, resolvedHost string, port uint16) {
+	if s.bypassMatcher != nil && s.bypassMatcher.Match(originalHost, resolvedHost) {
+		s.createDirectTunnel(clientConn, originalHost, resolvedHost, port)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.GetTunnelTimeout())
 	defer cancel()
 
@@ -463,6 +477,64 @@ func (s *Server) createTunnel(clientConn net.Conn, originalHost, resolvedHost st
 		}
 		cleanup()
 	}
+}
+
+func (s *Server) createDirectTunnel(clientConn net.Conn, originalHost, resolvedHost string, port uint16) {
+	host := strings.TrimSuffix(strings.TrimPrefix(resolvedHost, "["), "]")
+	targetAddr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	startedAt := time.Now()
+
+	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.GetTunnelTimeout())
+	targetConn, err := (&net.Dialer{}).DialContext(ctx, "tcp", targetAddr)
+	cancel()
+	if err != nil {
+		s.log.Warn("直连绕过失败 -> %s:%d: %v", originalHost, port, err)
+		_, _ = clientConn.Write([]byte{socks5Version, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		return
+	}
+	defer targetConn.Close()
+
+	if _, err := clientConn.Write([]byte{socks5Version, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
+		s.log.Debug("发送直连 SOCKS5 响应失败: %v", err)
+		return
+	}
+
+	s.log.Info("直连绕过 -> %s:%d", originalHost, port)
+	atomic.AddInt32(&s.activeTunnels, 1)
+	defer atomic.AddInt32(&s.activeTunnels, -1)
+
+	type transferResult struct {
+		upload bool
+		bytes  int64
+	}
+	completed := make(chan transferResult)
+	go func() {
+		n, _ := io.Copy(targetConn, clientConn)
+		if tcpConn, ok := targetConn.(*net.TCPConn); ok {
+			_ = tcpConn.CloseWrite()
+		}
+		completed <- transferResult{upload: true, bytes: n}
+	}()
+	go func() {
+		n, _ := io.Copy(clientConn, targetConn)
+		if tcpConn, ok := clientConn.(*net.TCPConn); ok {
+			_ = tcpConn.CloseWrite()
+		}
+		completed <- transferResult{bytes: n}
+	}()
+
+	first := <-completed
+	second := <-completed
+	var bytesSent, bytesReceived int64
+	for _, result := range []transferResult{first, second} {
+		if result.upload {
+			bytesSent = result.bytes
+		} else {
+			bytesReceived = result.bytes
+		}
+	}
+	s.log.Info("直连完成 -> %s:%d | 耗时=%dms ↑%s ↓%s",
+		originalHost, port, time.Since(startedAt).Milliseconds(), formatBytes(bytesSent), formatBytes(bytesReceived))
 }
 
 // Close 关闭服务器

@@ -16,7 +16,7 @@
         android:id="@+id/text_protocol"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#f0f0f0"
+        android:background="@color/code_background"
         android:padding="12dp"
         android:textSize="12sp"
         android:layout_marginBottom="16dp"/>

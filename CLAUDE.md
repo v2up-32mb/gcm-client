@@ -131,9 +131,13 @@ func StartSocksProxy(
     listenAddr, workerHost string,
     wsConn int,
     relayIPs, userID, proxyIP, echDomain, dohURL string,
-    enableECH, disableIPv6Route, enableDNSWarmup, verbose bool,
+    enableECH, disableIPv6Route, enableDNSWarmup bool,
+    bypassPrivate, bypassGeoIPCN, bypassGeoSiteCN bool,
+    bypassRules string,
+    verbose bool,
 ) error
 
+func ValidateBypassRules(rules string) error
 func StopSocksProxy()
 ```
 
@@ -149,6 +153,10 @@ func StopSocksProxy()
 - `enableECH`：是否启用 ECH（true=DoH 查询 ECH 公钥+ECH TLS；false=标准 TLS 1.3）
 - `disableIPv6Route`：保留参数，本层不使用（VPN 由 Android 层负责）
 - `enableDNSWarmup`：DNS 预热开关（默认 false，避免冷启动冲突；UI checkbox 可开关）
+- `bypassPrivate`：本地、局域网和链路本地地址直连
+- `bypassGeoIPCN`：命中内置 `GEOIP:CN` CIDR 的目标直连
+- `bypassGeoSiteCN`：命中内置 `GEOSITE:CN` 域名规则的目标直连
+- `bypassRules`：换行分隔的手动 IP、CIDR、域名后缀和 `full:` 域名规则
 - `verbose`：日志级别（true=DEBUG，false=INFO）
 
-`StopSocksProxy` 异步逆序释放资源：`echManager.StopAutoRefresh` → `socks5Server.Close` → `connPool.Close` → `relayManager.Close` → `dnsCache.Close` → `logger.Close`，并加 `sync.Mutex` 防重复。
+`ValidateBypassRules` 在保存全局设置前验证手动规则。`StopSocksProxy` 同步逆序释放资源：`echManager.StopAutoRefresh` → `socks5Server.Close` → `connPool.Close` → `relayManager.Close` → `dnsCache.Close` → `logger.Close`，并加 `sync.Mutex` 防重复。

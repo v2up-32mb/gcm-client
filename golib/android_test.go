@@ -59,3 +59,12 @@ func TestBuildConfigPreservesMainDoHFallback(t *testing.T) {
 		t.Fatalf("DoHUrl = %q, want main fallback sentinel", cfg.DoHUrl)
 	}
 }
+
+func TestValidateBypassRules(t *testing.T) {
+	if err := ValidateBypassRules("192.168.0.0/16\ndomain:example.cn\nfull:api.example.com"); err != nil {
+		t.Fatalf("ValidateBypassRules() error = %v", err)
+	}
+	if err := ValidateBypassRules("not a valid rule!"); err == nil {
+		t.Fatal("ValidateBypassRules() error = nil")
+	}
+}

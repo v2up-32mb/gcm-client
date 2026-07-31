@@ -54,4 +54,16 @@
 
         <!-- Theme -->
         <string name="theme_toggle">切换主题</string>
+        <string name="theme_system">跟随系统</string>
+        <string name="theme_light">亮色</string>
+        <string name="theme_dark">暗色</string>
+        <string name="search_apps">搜索应用</string>
+
+        <!-- Route bypass -->
+        <string name="bypass_routes">路由绕过</string>
+        <string name="bypass_private">绕过本地和局域网地址</string>
+        <string name="bypass_geoip_cn">绕过 GEOIP:CN</string>
+        <string name="bypass_geosite_cn">绕过 GEOSITE:CN</string>
+        <string name="manual_bypass_rules">手动规则（每行一条）</string>
+        <string name="manual_bypass_rules_hint">192.168.1.0/24\nexample.com\nfull:api.example.com</string>
 </resources>

@@ -51,7 +51,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
                 android:textSize="11sp"
-                android:textColor="#999999"
+                android:textColor="@color/secondary_text"
                 android:text="server.com"/>
 
         </LinearLayout>
@@ -63,7 +63,7 @@
         android:layout_width="match_parent"
         android:layout_height="1dp"
         android:layout_gravity="bottom"
-        android:background="#E0E0E0"/>
+        android:background="@color/divider"/>
 
     <!-- Overlay Layer: Action Buttons (显示在前景层上方) -->
     <LinearLayout

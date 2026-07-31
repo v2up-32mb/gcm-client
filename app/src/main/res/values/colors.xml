@@ -7,5 +7,7 @@
 
     <!-- FAB 背景色: RGB(43, 99, 165) -->
     <color name="fab_background">#2B63A5</color>
+    <color name="secondary_text">#6B7280</color>
+    <color name="divider">#E0E0E0</color>
+    <color name="code_background">#F0F0F0</color>
 </resources>
-

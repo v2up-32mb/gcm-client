@@ -243,6 +243,10 @@ public class TProxyService extends VpnService {
                 !prefs.getDisableEch(),
                 prefs.getDisableIpv6Route(),
                 prefs.getEnableDnsWarmup(),
+                prefs.getBypassPrivate(),
+                prefs.getBypassGeoIpCn(),
+                prefs.getBypassGeoSiteCn(),
+                prefs.getBypassRules(),
                 true
         );
     }

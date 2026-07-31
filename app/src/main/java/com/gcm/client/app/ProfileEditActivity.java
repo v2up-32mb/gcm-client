@@ -8,7 +8,6 @@
 
 package com.gcm.client.app;
 
-import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.os.Bundle;
@@ -16,9 +15,10 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.Toast;
+import androidx.appcompat.app.AppCompatActivity;
 import com.journeyapps.barcodescanner.ScanOptions;
 
-public class ProfileEditActivity extends Activity {
+public class ProfileEditActivity extends AppCompatActivity {
     public static final String EXTRA_PROFILE_ID = "EXTRA_PROFILE_ID";
     public static final String EXTRA_IS_NEW_PROFILE = "EXTRA_IS_NEW_PROFILE";
     private static final int REQUEST_SCAN_QR = 1001;

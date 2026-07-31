@@ -8,20 +8,26 @@
 
 package com.gcm.client.app;
 
-import android.app.Activity;
 import android.content.Intent;
 import android.os.Bundle;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.Toast;
+import androidx.appcompat.app.AppCompatActivity;
 
-public class SettingsActivity extends Activity {
+import gcm.Gcm;
+
+public class SettingsActivity extends AppCompatActivity {
     private Preferences prefs;
 
     private CheckBox checkbox_global;
     private Button button_apps;
     private EditText edittext_socks_port;
+    private CheckBox checkbox_bypass_private;
+    private CheckBox checkbox_bypass_geoip_cn;
+    private CheckBox checkbox_bypass_geosite_cn;
+    private EditText edittext_bypass_rules;
     private Button btn_save;
 
     @Override
@@ -38,6 +44,10 @@ public class SettingsActivity extends Activity {
         checkbox_global = findViewById(R.id.checkbox_global);
         button_apps = findViewById(R.id.button_apps);
         edittext_socks_port = findViewById(R.id.edittext_socks_port);
+        checkbox_bypass_private = findViewById(R.id.checkbox_bypass_private);
+        checkbox_bypass_geoip_cn = findViewById(R.id.checkbox_bypass_geoip_cn);
+        checkbox_bypass_geosite_cn = findViewById(R.id.checkbox_bypass_geosite_cn);
+        edittext_bypass_rules = findViewById(R.id.edittext_bypass_rules);
         btn_save = findViewById(R.id.btn_save);
 
         // 加载当前设置
@@ -61,6 +71,10 @@ public class SettingsActivity extends Activity {
         // 加载全局设置
         checkbox_global.setChecked(prefs.getGlobal());
         edittext_socks_port.setText(String.valueOf(prefs.getSocksPort()));
+        checkbox_bypass_private.setChecked(prefs.getBypassPrivate());
+        checkbox_bypass_geoip_cn.setChecked(prefs.getBypassGeoIpCn());
+        checkbox_bypass_geosite_cn.setChecked(prefs.getBypassGeoSiteCn());
+        edittext_bypass_rules.setText(prefs.getBypassRules());
 
         // 检查 VPN 是否正在运行
         boolean isVpnRunning = prefs.getEnable();
@@ -69,6 +83,10 @@ public class SettingsActivity extends Activity {
             checkbox_global.setEnabled(false);
             button_apps.setEnabled(false);
             edittext_socks_port.setEnabled(false);
+            checkbox_bypass_private.setEnabled(false);
+            checkbox_bypass_geoip_cn.setEnabled(false);
+            checkbox_bypass_geosite_cn.setEnabled(false);
+            edittext_bypass_rules.setEnabled(false);
             btn_save.setEnabled(false);
 
             Toast.makeText(this, "VPN 正在运行，无法修改全局设置", Toast.LENGTH_LONG).show();
@@ -77,8 +95,9 @@ public class SettingsActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        saveSettings();
-        super.onBackPressed();
+        if (prefs.getEnable() || saveSettings()) {
+            super.onBackPressed();
+        }
     }
 
     private boolean saveSettings() {
@@ -95,9 +114,21 @@ public class SettingsActivity extends Activity {
             return false;
         }
 
+        String bypassRules = edittext_bypass_rules.getText().toString().trim();
+        try {
+            Gcm.validateBypassRules(bypassRules);
+        } catch (Exception e) {
+            Toast.makeText(this, "绕过规则格式错误: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            return false;
+        }
+
         // 保存全局设置
         prefs.setGlobal(checkbox_global.isChecked());
         prefs.setSocksPort(port);
+        prefs.setBypassPrivate(checkbox_bypass_private.isChecked());
+        prefs.setBypassGeoIpCn(checkbox_bypass_geoip_cn.isChecked());
+        prefs.setBypassGeoSiteCn(checkbox_bypass_geosite_cn.isChecked());
+        prefs.setBypassRules(bypassRules);
 
         return true;
     }

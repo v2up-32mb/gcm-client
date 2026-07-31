@@ -8,7 +8,6 @@
 
 package com.gcm.client.app;
 
-import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -32,6 +31,7 @@ import android.widget.ImageView;
 import android.widget.PopupMenu;
 import android.widget.TextView;
 import android.widget.Toast;
+import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -47,7 +47,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
-public class ProfileListActivity extends Activity implements ProfileAdapter.OnProfileActionListener {
+public class ProfileListActivity extends AppCompatActivity implements ProfileAdapter.OnProfileActionListener {
     private static final int REQUEST_VPN = 0;
     private static final int REQUEST_SCAN_QR = 1001;
 
@@ -811,6 +811,7 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
             TextView titleView = new TextView(this);
             titleView.setText(spannableString);
             titleView.setTextSize(16);
+            titleView.setTextColor(getResources().getColor(android.R.color.white));
             toolbar.addView(titleView);
         } catch (PackageManager.NameNotFoundException e) {
             // 降级处理：只显示 APP 名称
@@ -819,6 +820,40 @@ public class ProfileListActivity extends Activity implements ProfileAdapter.OnPr
             titleView.setTextSize(16);
             titleView.setTextColor(getResources().getColor(android.R.color.white));
             toolbar.addView(titleView);
+        }
+
+        toolbar.inflateMenu(R.menu.menu_main);
+        updateThemeMenu();
+        toolbar.setOnMenuItemClickListener(item -> {
+            int mode;
+            if (item.getItemId() == R.id.theme_system) {
+                mode = Preferences.THEME_SYSTEM;
+            } else if (item.getItemId() == R.id.theme_light) {
+                mode = Preferences.THEME_LIGHT;
+            } else if (item.getItemId() == R.id.theme_dark) {
+                mode = Preferences.THEME_DARK;
+            } else {
+                return false;
+            }
+            ThemeManager.setMode(this, mode);
+            return true;
+        });
+    }
+
+    private void updateThemeMenu() {
+        int mode = prefs.getThemeMode();
+        Menu menu = toolbar.getMenu();
+        menu.findItem(R.id.theme_system).setChecked(mode == Preferences.THEME_SYSTEM);
+        menu.findItem(R.id.theme_light).setChecked(mode == Preferences.THEME_LIGHT);
+        menu.findItem(R.id.theme_dark).setChecked(mode == Preferences.THEME_DARK);
+
+        MenuItem themeItem = menu.findItem(R.id.action_theme);
+        if (mode == Preferences.THEME_LIGHT) {
+            themeItem.setIcon(R.drawable.ic_light_mode);
+        } else if (mode == Preferences.THEME_DARK) {
+            themeItem.setIcon(R.drawable.ic_dark_mode);
+        } else {
+            themeItem.setIcon(R.drawable.ic_system_mode);
         }
     }
 }
