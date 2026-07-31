@@ -55,11 +55,11 @@ func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID
 	if echDomain != "" {
 		c.ECHDomain = echDomain
 	}
-	// DoH 服务器：dohURL 非空用用户的；为空默认 doh.pub
+	// DoH 服务器：dohURL 非空用用户的；为空默认 https://doh.pub/dns-query
 	if dohURL = strings.TrimSpace(dohURL); dohURL != "" {
 		c.DoHUrl = dohURL
 	} else {
-		c.DoHUrl = "doh.pub"
+		c.DoHUrl = "https://doh.pub/dns-query"
 	}
 	c.EnableECH = enableECH
 	if verbose {

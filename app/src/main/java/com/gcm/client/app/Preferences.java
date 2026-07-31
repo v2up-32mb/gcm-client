@@ -288,7 +288,7 @@ public class Preferences
 
         // ECH DoH 服务器（查询 ECH 公钥用）
         public String getEchDns() {
-                return prefs.getString(getKey(ECH_DNS), "doh.pub");
+                return prefs.getString(getKey(ECH_DNS), "https://doh.pub/dns-query");
         }
 
         public void setEchDns(String addr) {
