@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+    <LinearLayout
+        android:orientation="vertical"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="16dp">
+
+        <!-- 全局设置标题 -->
+        <TextView
+            android:text="全局设置"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textStyle="bold"
+            android:textSize="18sp"
+            android:paddingBottom="16dp"/>
+
+        <!-- 代理模式 -->
+        <TextView
+            android:text="代理模式"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textStyle="bold"
+            android:textSize="16sp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"/>
+
+        <CheckBox android:id="@+id/checkbox_global"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="全局代理"/>
+
+        <TextView
+            android:text="勾选为全局代理，不勾选为分应用代理"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="12sp"
+            android:textColor="#757575"
+            android:paddingBottom="8dp"/>
+
+        <Button android:id="@+id/button_apps"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="选择应用"
+            android:backgroundTint="#9C27B0"/>
+
+        <!-- 本地代理端口 -->
+        <TextView android:text="本地代理端口"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textStyle="bold"
+            android:paddingTop="16dp"/>
+        <EditText android:id="@+id/edittext_socks_port"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="1080"
+            android:inputType="number"
+            android:singleLine="true"/>
+
+        <!-- 保存按钮 -->
+        <Button android:id="@+id/btn_save"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="保存"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#2196F3"
+            android:textSize="16sp"/>
+
+    </LinearLayout>
+</ScrollView>
