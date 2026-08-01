@@ -291,8 +291,7 @@ func (s *Server) createTunnel(clientConn net.Conn, originalHost, resolvedHost st
 	if err := connItem.WriteMessage(websocket.BinaryMessage, connectMsg.Encode()); err != nil {
 		s.log.Error("发送 CONNECT 消息失败: %v", err)
 		connItem.RecordFailure()
-		s.pool.UnregisterStreamHandler(connItem, streamID)
-		s.pool.ReleaseConnection(connItem)
+		s.pool.RetireConnection(connItem, "发送 CONNECT 消息失败")
 		return
 	}
 
@@ -449,6 +448,7 @@ func (s *Server) createTunnel(clientConn net.Conn, originalHost, resolvedHost st
 			connItem.Traffic.AddSent(int64(n))
 			dataMsg := protocol.NewDataMessage(streamID, buf[:n])
 			if err := connItem.WriteMessage(websocket.BinaryMessage, dataMsg.Encode()); err != nil {
+				s.pool.RetireConnection(connItem, "发送数据消息失败")
 				cleanup()
 				return
 			}
@@ -474,6 +474,7 @@ func (s *Server) createTunnel(clientConn net.Conn, originalHost, resolvedHost st
 			if stream != nil {
 				stream.RecordTimeout()
 			}
+			s.pool.RetireConnection(connItem, "隧道建立超时")
 		}
 		cleanup()
 	}

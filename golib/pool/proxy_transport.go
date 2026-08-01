@@ -228,6 +228,7 @@ func (t *ProxyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// 4. 发送 CONNECT 消息
 	connectMsg := protocol.NewConnectMessage(streamID, host, port)
 	if err := connItem.WriteMessage(websocket.BinaryMessage, connectMsg.Encode()); err != nil {
+		t.pool.RetireConnection(connItem, "Proxy CONNECT 写入失败")
 		t.pool.UnregisterStreamHandler(connItem, streamID)
 		return nil, fmt.Errorf("发送 CONNECT 失败: %w", err)
 	}
@@ -239,6 +240,7 @@ func (t *ProxyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		t.pool.UnregisterStreamHandler(connItem, streamID)
 		return nil, fmt.Errorf("连接被关闭")
 	case <-time.After(5 * time.Second):
+		t.pool.RetireConnection(connItem, "Proxy CONNECT 超时")
 		t.pool.UnregisterStreamHandler(connItem, streamID)
 		return nil, fmt.Errorf("连接超时")
 	}

@@ -1,14 +1,19 @@
 package pool
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"gcm/config"
 	"gcm/logger"
+	"github.com/gorilla/websocket"
 )
 
-func TestHandleConnectionCloseRemovesDeadActiveConnection(t *testing.T) {
+func TestRetireConnectionRemovesDeadActiveConnection(t *testing.T) {
 	conn := &ConnItem{
 		ConnectionID: []byte{0x01, 0x02, 0x03},
 		Traffic:      &TrafficCounter{},
@@ -38,7 +43,7 @@ func TestHandleConnectionCloseRemovesDeadActiveConnection(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		p.handleConnectionClose(conn)
+		p.RetireConnection(conn, "test")
 		close(done)
 	}()
 
@@ -105,4 +110,92 @@ func TestReconnectMarksEveryConnectionClosed(t *testing.T) {
 	if !connA.closed.Load() || !connB.closed.Load() {
 		t.Fatal("network recovery did not mark every connection closed")
 	}
+}
+
+func TestWriteMessageMarksSocketClosedAfterWriteFailure(t *testing.T) {
+	ws := newTestWebSocket(t)
+	if err := ws.Close(); err != nil {
+		t.Fatalf("close test websocket: %v", err)
+	}
+
+	conn := &ConnItem{
+		WS:           ws,
+		ConnectionID: []byte{0x0d, 0x0e, 0x0f},
+		Traffic:      &TrafficCounter{},
+		writeTimeout: 20 * time.Millisecond,
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("test")); err == nil {
+		t.Fatal("WriteMessage succeeded on a closed websocket")
+	}
+	if !conn.closed.Load() {
+		t.Fatal("failed websocket write did not mark the connection closed")
+	}
+}
+
+func TestHeartbeatDoesNotHoldPoolLockDuringWrite(t *testing.T) {
+	conn := &ConnItem{
+		WS:           newTestWebSocket(t),
+		ConnectionID: []byte{0x10, 0x11, 0x12},
+		Traffic:      &TrafficCounter{},
+	}
+	conn.writeMu.Lock()
+
+	p := &ConnectionPool{
+		cfg:               config.DefaultConfig(),
+		log:               logger.GetLogger("PoolTest"),
+		managerByConn:     map[*ConnItem]*StreamManager{conn: nil},
+		pendingHeartbeats: map[string]time.Time{},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		p.sendHeartbeat()
+		close(done)
+	}()
+
+	poolLockAvailable := make(chan struct{})
+	go func() {
+		p.mu.Lock()
+		p.mu.Unlock()
+		close(poolLockAvailable)
+	}()
+
+	select {
+	case <-poolLockAvailable:
+	case <-time.After(time.Second):
+		conn.writeMu.Unlock()
+		t.Fatal("heartbeat write held the pool lock")
+	}
+
+	conn.writeMu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat did not finish after the write lock was released")
+	}
+}
+
+func newTestWebSocket(t *testing.T) *websocket.Conn {
+	t.Helper()
+	stopServer := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		<-stopServer
+		_ = conn.Close()
+	}))
+	t.Cleanup(func() {
+		close(stopServer)
+		server.Close()
+	})
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial test websocket: %v", err)
+	}
+	return ws
 }

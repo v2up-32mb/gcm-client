@@ -26,6 +26,8 @@ type EchManagerInterface interface {
 	Refresh(domain string) error
 }
 
+const defaultWebSocketWriteTimeout = 5 * time.Second
+
 // ConnItem 连接项
 type ConnItem struct {
 	WS           *websocket.Conn
@@ -37,6 +39,7 @@ type ConnItem struct {
 	Traffic      *TrafficCounter     // 流量计数器
 	mu           sync.Mutex          // 保护 Streams 和 targets
 	writeMu      sync.Mutex          // 保护 WS 写操作
+	writeTimeout time.Duration       // 单次 WebSocket 写入超时
 	targets      map[string]struct{} // 该连接服务的前往目标地址集合 (用于多路复用亲和性)
 	active       atomic.Bool         // 是否已从空闲池取出并计入 activeConnections
 	closed       atomic.Bool         // WebSocket 是否已失效，失效连接不可再次入池
@@ -55,17 +58,49 @@ type ConnItem struct {
 	qualityMu         sync.Mutex        // 保护质量监控字段
 }
 
+func (c *ConnItem) markClosed() {
+	c.closed.Store(true)
+	if c.WS != nil {
+		_ = c.WS.Close()
+	}
+}
+
 // WriteMessage 线程安全的 WebSocket 写入方法
 func (c *ConnItem) WriteMessage(messageType int, data []byte) error {
+	if c == nil || c.WS == nil {
+		if c != nil {
+			c.markClosed()
+		}
+		return net.ErrClosed
+	}
 	if c.closed.Load() {
 		return net.ErrClosed
 	}
+
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if c.closed.Load() {
 		return net.ErrClosed
 	}
-	return c.WS.WriteMessage(messageType, data)
+
+	writeTimeout := c.writeTimeout
+	if writeTimeout <= 0 {
+		writeTimeout = defaultWebSocketWriteTimeout
+	}
+	if err := c.WS.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+		c.markClosed()
+		return err
+	}
+
+	if err := c.WS.WriteMessage(messageType, data); err != nil {
+		c.markClosed()
+		return err
+	}
+	if err := c.WS.SetWriteDeadline(time.Time{}); err != nil {
+		c.markClosed()
+		return err
+	}
+	return nil
 }
 
 func (c *ConnItem) markActive() bool {
@@ -591,6 +626,7 @@ func (p *ConnectionPool) createConnectionSync(reason string) bool {
 		CreatedAt:    time.Now(),
 		Streams:      0,
 		Traffic:      &TrafficCounter{},
+		writeTimeout: p.cfg.GetHeartbeatTimeout(),
 		// 初始化质量监控字段
 		QualityScore:      100, // 初始满分
 		BaselineRTT:       latency,
@@ -771,6 +807,7 @@ func (p *ConnectionPool) createConnection(reason string) bool {
 		CreatedAt:    time.Now(),
 		Streams:      0,
 		Traffic:      &TrafficCounter{},
+		writeTimeout: p.cfg.GetHeartbeatTimeout(),
 		// 初始化质量监控字段
 		QualityScore:      100, // 初始满分
 		BaselineRTT:       latency,
@@ -911,6 +948,7 @@ func (p *ConnectionPool) createConnectionWithRelay(relay *relay.RelayNode, reaso
 		CreatedAt:    time.Now(),
 		Streams:      0,
 		Traffic:      &TrafficCounter{},
+		writeTimeout: p.cfg.GetHeartbeatTimeout(),
 		// 初始化质量监控字段
 		QualityScore:      100,
 		BaselineRTT:       latency,
@@ -961,9 +999,18 @@ func (p *ConnectionPool) createConnectionWithRelay(relay *relay.RelayNode, reaso
 func (p *ConnectionPool) messageLoop(item *ConnItem) {
 	ws := item.WS
 	connIDStr := fmt.Sprintf("%02x%02x%02x", item.ConnectionID[0], item.ConnectionID[1], item.ConnectionID[2])
+	readTimeout := p.cfg.GetHeartbeatInterval() + p.cfg.GetHeartbeatTimeout()
+	if readTimeout <= 0 {
+		readTimeout = defaultWebSocketWriteTimeout
+	}
+	_ = ws.SetReadDeadline(time.Now().Add(readTimeout))
 
 	// 设置 Pong 处理器，处理心跳响应
 	ws.SetPongHandler(func(appData string) error {
+		if err := ws.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+			return err
+		}
+
 		p.mu.Lock()
 		defer p.mu.Unlock()
 
@@ -1056,6 +1103,22 @@ func (p *ConnectionPool) handleConnectionClose(item *ConnItem) {
 	}
 	if mgrToClose != nil {
 		mgrToClose.HandleConnectionClose()
+	}
+}
+
+// RetireConnection removes a failed WebSocket from every pool index and closes
+// it. It is safe to call more than once; the first call owns stream cleanup.
+func (p *ConnectionPool) RetireConnection(item *ConnItem, reason string) {
+	if item == nil {
+		return
+	}
+	if item.closed.CompareAndSwap(false, true) && p.log != nil {
+		p.log.Debug("连接 [%s] 退休: %s", formatConnID(item.ConnectionID), reason)
+	}
+
+	p.handleConnectionClose(item)
+	if item.WS != nil {
+		_ = item.WS.Close()
 	}
 }
 
@@ -1740,11 +1803,14 @@ func (p *ConnectionPool) heartbeatLoop() {
 
 // sendHeartbeat 发送心跳
 func (p *ConnectionPool) sendHeartbeat() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	now := time.Now()
-	timeout := 0
+	var pendingItems []*ConnItem
+	var timeoutItems []*ConnItem
+
+	p.mu.Lock()
+	if p.pendingHeartbeats == nil {
+		p.pendingHeartbeats = make(map[string]time.Time)
+	}
 
 	for item := range p.managerByConn {
 		if item.WS != nil && !item.closed.Load() {
@@ -1753,26 +1819,31 @@ func (p *ConnectionPool) sendHeartbeat() {
 			// 检查是否有待响应的心跳
 			if lastPing, ok := p.pendingHeartbeats[connIDStr]; ok {
 				if now.Sub(lastPing) > p.cfg.GetHeartbeatTimeout() {
-					p.log.Debug("连接 [%s] 心跳超时，移除", connIDStr)
-					item.closed.Store(true)
-					item.WS.Close()
 					delete(p.pendingHeartbeats, connIDStr)
-					timeout++
+					timeoutItems = append(timeoutItems, item)
 				}
 			} else {
-				// 发送新心跳
-				if err := item.WriteMessage(websocket.PingMessage, nil); err == nil {
-					p.pendingHeartbeats[connIDStr] = now
-				} else {
-					item.closed.Store(true)
-					item.WS.Close()
-				}
+				// 先登记待响应状态，再在锁外执行可能阻塞的写操作。
+				p.pendingHeartbeats[connIDStr] = now
+				pendingItems = append(pendingItems, item)
 			}
 		}
 	}
+	p.mu.Unlock()
 
-	if timeout > 0 {
-		p.log.Debug("心跳超时: %d 个连接", timeout)
+	for _, item := range timeoutItems {
+		atomic.AddInt64(&item.HeartbeatFailures, 1)
+		p.RetireConnection(item, "心跳超时")
+	}
+	for _, item := range pendingItems {
+		if err := item.WriteMessage(websocket.PingMessage, nil); err != nil {
+			atomic.AddInt64(&item.HeartbeatFailures, 1)
+			p.RetireConnection(item, fmt.Sprintf("心跳写入失败: %v", err))
+		}
+	}
+
+	if len(timeoutItems) > 0 && p.log != nil {
+		p.log.Debug("心跳超时: %d 个连接", len(timeoutItems))
 	}
 }
 
