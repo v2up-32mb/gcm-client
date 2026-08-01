@@ -22,7 +22,6 @@ import android.net.VpnService;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.Button;
@@ -823,7 +822,7 @@ public class ProfileListActivity extends AppCompatActivity implements ProfileAda
         }
 
         toolbar.inflateMenu(R.menu.menu_main);
-        updateThemeMenu();
+        updateThemeIcon();
         toolbar.setOnMenuItemClickListener(item -> {
             int mode;
             if (item.getItemId() == R.id.theme_system) {
@@ -840,14 +839,9 @@ public class ProfileListActivity extends AppCompatActivity implements ProfileAda
         });
     }
 
-    private void updateThemeMenu() {
+    private void updateThemeIcon() {
         int mode = prefs.getThemeMode();
-        Menu menu = toolbar.getMenu();
-        menu.findItem(R.id.theme_system).setChecked(mode == Preferences.THEME_SYSTEM);
-        menu.findItem(R.id.theme_light).setChecked(mode == Preferences.THEME_LIGHT);
-        menu.findItem(R.id.theme_dark).setChecked(mode == Preferences.THEME_DARK);
-
-        MenuItem themeItem = menu.findItem(R.id.action_theme);
+        MenuItem themeItem = toolbar.getMenu().findItem(R.id.action_theme);
         if (mode == Preferences.THEME_LIGHT) {
             themeItem.setIcon(R.drawable.ic_light_mode);
         } else if (mode == Preferences.THEME_DARK) {
