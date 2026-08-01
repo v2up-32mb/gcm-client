@@ -1,0 +1,108 @@
+package pool
+
+import (
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"gcm/logger"
+)
+
+func TestHandleConnectionCloseRemovesDeadActiveConnection(t *testing.T) {
+	conn := &ConnItem{
+		ConnectionID: []byte{0x01, 0x02, 0x03},
+		Traffic:      &TrafficCounter{},
+	}
+	sm := NewStreamManager(conn, 1, 256*1024, 32*1024, 1024*1024, 5*time.Second)
+	streamID, ok := sm.tryAllocateStream("example.com:443")
+	if !ok {
+		t.Fatal("stream allocation failed")
+	}
+
+	p := &ConnectionPool{
+		pool:              make([]*ConnItem, 0),
+		managerByConn:     map[*ConnItem]*StreamManager{conn: sm},
+		targetToConn:      map[string]*ConnItem{"example.com:443": conn},
+		pendingHeartbeats: map[string]time.Time{},
+	}
+	conn.markActive()
+	atomic.StoreInt32(&p.activeConnections, 1)
+	sm.RegisterHandler(streamID, &StreamHandler{
+		OnClose: func() {
+			// Mirrors the SOCKS close callback. The pool must already have
+			// detached the manager before this callback runs.
+			p.UnregisterStreamHandler(conn, streamID)
+			p.ReleaseConnection(conn)
+		},
+	})
+
+	done := make(chan struct{})
+	go func() {
+		p.handleConnectionClose(conn)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("connection close did not finish")
+	}
+
+	if got := atomic.LoadInt32(&p.activeConnections); got != 0 {
+		t.Fatalf("active connection count = %d, want 0", got)
+	}
+	if len(p.pool) != 0 {
+		t.Fatalf("dead connection was returned to idle pool")
+	}
+	if _, ok := p.managerByConn[conn]; ok {
+		t.Fatalf("dead connection manager was retained")
+	}
+	if _, ok := p.targetToConn["example.com:443"]; ok {
+		t.Fatalf("dead connection affinity was retained")
+	}
+	if sm.GetStreamCount() != 0 {
+		t.Fatalf("stream manager retained streams after connection close")
+	}
+}
+
+func TestReleaseConnectionDoesNotReuseClosedSocket(t *testing.T) {
+	conn := &ConnItem{
+		ConnectionID: []byte{0x04, 0x05, 0x06},
+		Traffic:      &TrafficCounter{},
+	}
+	conn.closed.Store(true)
+	conn.markActive()
+	sm := NewStreamManager(conn, 1, 256*1024, 32*1024, 1024*1024, 5*time.Second)
+	p := &ConnectionPool{
+		pool:          make([]*ConnItem, 0),
+		managerByConn: map[*ConnItem]*StreamManager{conn: sm},
+	}
+	atomic.StoreInt32(&p.activeConnections, 1)
+
+	p.ReleaseConnection(conn)
+
+	if len(p.pool) != 0 {
+		t.Fatalf("closed connection was returned to idle pool")
+	}
+	if got := atomic.LoadInt32(&p.activeConnections); got != 0 {
+		t.Fatalf("active connection count = %d, want 0", got)
+	}
+}
+
+func TestReconnectMarksEveryConnectionClosed(t *testing.T) {
+	connA := &ConnItem{ConnectionID: []byte{0x07, 0x08, 0x09}, Traffic: &TrafficCounter{}}
+	connB := &ConnItem{ConnectionID: []byte{0x0a, 0x0b, 0x0c}, Traffic: &TrafficCounter{}}
+	p := &ConnectionPool{
+		log: logger.GetLogger("PoolTest"),
+		managerByConn: map[*ConnItem]*StreamManager{
+			connA: nil,
+			connB: nil,
+		},
+	}
+
+	p.Reconnect("test network transition")
+
+	if !connA.closed.Load() || !connB.closed.Load() {
+		t.Fatal("network recovery did not mark every connection closed")
+	}
+}

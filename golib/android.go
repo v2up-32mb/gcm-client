@@ -179,3 +179,14 @@ func StopSocksProxy() {
 	logger.Close()
 	cfg, dohClient, dnsCache, relayManager, echManager, connPool, socks5Server = nil, nil, nil, nil, nil, nil, nil
 }
+
+// NotifyNetworkChanged asks the running pool to replace sockets bound to the
+// previous physical network. The Android VPN interface is left untouched.
+func NotifyNetworkChanged() {
+	lifecycleMu.Lock()
+	p := connPool
+	lifecycleMu.Unlock()
+	if p != nil {
+		p.Reconnect("Android default network changed")
+	}
+}

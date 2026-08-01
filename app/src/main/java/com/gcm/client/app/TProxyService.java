@@ -22,6 +22,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.pm.ServiceInfo;
+import android.net.ConnectivityManager;
+import android.net.Network;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
@@ -58,6 +60,12 @@ public class TProxyService extends VpnService {
     private volatile ParcelFileDescriptor tunFd;
     private volatile boolean starting;
     private volatile boolean stopping;
+    private volatile boolean runtimeRunning;
+    private final Object networkLock = new Object();
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private Network defaultNetwork;
+    private boolean networkReconnectPending;
 
     @Override
     public void onCreate() {
@@ -130,6 +138,8 @@ public class TProxyService extends VpnService {
                 throw new IllegalStateException("hev-socks5-tunnel 未进入运行状态");
             }
 
+            runtimeRunning = true;
+            registerNetworkCallback();
             prefs.setEnable(true);
             updateNotification("VPN 已连接");
             sendStatus(STATUS_STARTED, null);
@@ -297,6 +307,8 @@ public class TProxyService extends VpnService {
     }
 
     private void cleanupRuntime() {
+        runtimeRunning = false;
+        unregisterNetworkCallback();
         try {
             TProxyStopService();
         } catch (Throwable error) {
@@ -316,6 +328,104 @@ public class TProxyService extends VpnService {
                 Log.w(TAG, "Failed to close TUN fd", error);
             }
         }
+    }
+
+    private void registerNetworkCallback() {
+        ConnectivityManager manager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (manager == null) {
+            Log.w(TAG, "ConnectivityManager unavailable; network change recovery is disabled");
+            return;
+        }
+
+        ConnectivityManager.NetworkCallback callback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                boolean changed;
+                synchronized (networkLock) {
+                    changed = defaultNetwork != null && !defaultNetwork.equals(network);
+                    defaultNetwork = network;
+                }
+                if (changed) {
+                    scheduleNetworkReconnect();
+                }
+            }
+
+            @Override
+            public void onLost(Network network) {
+                boolean lost;
+                synchronized (networkLock) {
+                    lost = defaultNetwork != null && defaultNetwork.equals(network);
+                    if (lost) {
+                        defaultNetwork = null;
+                    }
+                }
+                if (lost) {
+                    scheduleNetworkReconnect();
+                }
+            }
+        };
+
+        synchronized (networkLock) {
+            connectivityManager = manager;
+            networkCallback = callback;
+            defaultNetwork = null;
+        }
+        try {
+            manager.registerDefaultNetworkCallback(callback);
+        } catch (RuntimeException error) {
+            synchronized (networkLock) {
+                connectivityManager = null;
+                networkCallback = null;
+                defaultNetwork = null;
+            }
+            Log.w(TAG, "Failed to register network callback", error);
+        }
+    }
+
+    private void unregisterNetworkCallback() {
+        ConnectivityManager manager;
+        ConnectivityManager.NetworkCallback callback;
+        synchronized (networkLock) {
+            manager = connectivityManager;
+            callback = networkCallback;
+            connectivityManager = null;
+            networkCallback = null;
+            defaultNetwork = null;
+            networkReconnectPending = false;
+        }
+        if (manager != null && callback != null) {
+            try {
+                manager.unregisterNetworkCallback(callback);
+            } catch (RuntimeException error) {
+                Log.w(TAG, "Failed to unregister network callback", error);
+            }
+        }
+    }
+
+    private void scheduleNetworkReconnect() {
+        synchronized (networkLock) {
+            if (!runtimeRunning || networkReconnectPending) {
+                return;
+            }
+            networkReconnectPending = true;
+        }
+
+        new Thread(() -> {
+            try {
+                Thread.sleep(300);
+                if (runtimeRunning) {
+                    Gcm.notifyNetworkChanged();
+                }
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            } catch (Throwable error) {
+                Log.w(TAG, "Failed to reconnect after network change", error);
+            } finally {
+                synchronized (networkLock) {
+                    networkReconnectPending = false;
+                }
+            }
+        }, "gcm-network-reconnect").start();
     }
 
     private void sendStatus(String status, String error) {

@@ -38,6 +38,8 @@ type ConnItem struct {
 	mu           sync.Mutex          // 保护 Streams 和 targets
 	writeMu      sync.Mutex          // 保护 WS 写操作
 	targets      map[string]struct{} // 该连接服务的前往目标地址集合 (用于多路复用亲和性)
+	active       atomic.Bool         // 是否已从空闲池取出并计入 activeConnections
+	closed       atomic.Bool         // WebSocket 是否已失效，失效连接不可再次入池
 
 	// 质量监控字段
 	QualityScore      int64             // 质量评分 (0-100)，原子操作
@@ -55,9 +57,23 @@ type ConnItem struct {
 
 // WriteMessage 线程安全的 WebSocket 写入方法
 func (c *ConnItem) WriteMessage(messageType int, data []byte) error {
+	if c.closed.Load() {
+		return net.ErrClosed
+	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	if c.closed.Load() {
+		return net.ErrClosed
+	}
 	return c.WS.WriteMessage(messageType, data)
+}
+
+func (c *ConnItem) markActive() bool {
+	return c.active.CompareAndSwap(false, true)
+}
+
+func (c *ConnItem) markIdle() bool {
+	return c.active.CompareAndSwap(true, false)
 }
 
 // AddTarget 添加目标地址到该连接的服务集合
@@ -263,6 +279,43 @@ func NewConnectionPool(cfg *config.Config, relayMgr *relay.RelayManager, echMgr 
 	return p
 }
 
+func (p *ConnectionPool) liveConnectionCountLocked() int {
+	seen := make(map[*ConnItem]struct{}, len(p.managerByConn)+len(p.pool))
+	for item := range p.managerByConn {
+		if !item.closed.Load() {
+			seen[item] = struct{}{}
+		}
+	}
+	for _, item := range p.pool {
+		if !item.closed.Load() {
+			seen[item] = struct{}{}
+		}
+	}
+	return len(seen)
+}
+
+func (p *ConnectionPool) liveConnectionCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.liveConnectionCountLocked()
+}
+
+func (p *ConnectionPool) reserveConnectionSlot() (int, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	currentSize := p.liveConnectionCountLocked() + int(atomic.LoadInt32(&p.pendingConnections))
+	if currentSize >= p.cfg.MaxPoolSize {
+		return currentSize, false
+	}
+	atomic.AddInt32(&p.pendingConnections, 1)
+	return currentSize, true
+}
+
+func (p *ConnectionPool) releaseConnectionSlot() {
+	atomic.AddInt32(&p.pendingConnections, -1)
+}
+
 // Warmup 连接池预热
 func (p *ConnectionPool) Warmup() error {
 	if !p.cfg.EnablePoolWarmup || p.currentMinPoolSize <= 0 {
@@ -442,18 +495,12 @@ func (p *ConnectionPool) handleDialError(err error, relay *relay.RelayNode) {
 
 // createConnectionSync 同步创建连接（用于预热），返回成功/失败
 func (p *ConnectionPool) createConnectionSync(reason string) bool {
-	// 双重检查
-	currentSize := int(len(p.pool)) + int(atomic.LoadInt32(&p.activeConnections)) +
-		int(atomic.LoadInt32(&p.pendingConnections))
-	if currentSize >= p.cfg.MaxPoolSize {
+	currentSize, reserved := p.reserveConnectionSlot()
+	if !reserved {
 		p.log.Debug("连接池已满 (%d/%d)，跳过创建: %s", currentSize, p.cfg.MaxPoolSize, reason)
 		return false
 	}
-
-	atomic.AddInt32(&p.pendingConnections, 1)
-	defer func() {
-		atomic.AddInt32(&p.pendingConnections, -1)
-	}()
+	defer p.releaseConnectionSlot()
 
 	atomic.AddInt64(&p.stats.CreatedConnections, 1)
 
@@ -597,16 +644,12 @@ func (p *ConnectionPool) createConnectionSync(reason string) bool {
 
 // createConnection 创建新连接（异步版本，用于运行时）
 func (p *ConnectionPool) createConnection(reason string) bool {
-	// 双重检查
-	currentSize := int(len(p.pool)) + int(atomic.LoadInt32(&p.activeConnections)) +
-		int(atomic.LoadInt32(&p.pendingConnections))
-	if currentSize >= p.cfg.MaxPoolSize {
+	currentSize, reserved := p.reserveConnectionSlot()
+	if !reserved {
 		p.log.Debug("连接池已满 (%d/%d)，跳过创建: %s", currentSize, p.cfg.MaxPoolSize, reason)
 		return false
 	}
-
-	atomic.AddInt32(&p.pendingConnections, 1)
-	defer atomic.AddInt32(&p.pendingConnections, -1)
+	defer p.releaseConnectionSlot()
 
 	atomic.AddInt64(&p.stats.CreatedConnections, 1)
 
@@ -770,7 +813,9 @@ func (p *ConnectionPool) createConnection(reason string) bool {
 	// 检查是否有等待的请求
 	select {
 	case req := <-p.requestQueue:
-		atomic.AddInt32(&p.activeConnections, 1)
+		if item.markActive() {
+			atomic.AddInt32(&p.activeConnections, 1)
+		}
 		req.connCh <- item
 	default:
 		p.mu.Lock()
@@ -783,16 +828,12 @@ func (p *ConnectionPool) createConnection(reason string) bool {
 
 // createConnectionWithRelay 使用指定的中转节点创建连接
 func (p *ConnectionPool) createConnectionWithRelay(relay *relay.RelayNode, reason string) bool {
-	// 检查连接池是否已满
-	currentSize := int(len(p.pool)) + int(atomic.LoadInt32(&p.activeConnections)) +
-		int(atomic.LoadInt32(&p.pendingConnections))
-	if currentSize >= p.cfg.MaxPoolSize {
+	currentSize, reserved := p.reserveConnectionSlot()
+	if !reserved {
 		p.log.Debug("连接池已满 (%d/%d)，跳过创建: %s", currentSize, p.cfg.MaxPoolSize, reason)
 		return false
 	}
-
-	atomic.AddInt32(&p.pendingConnections, 1)
-	defer atomic.AddInt32(&p.pendingConnections, -1)
+	defer p.releaseConnectionSlot()
 
 	atomic.AddInt64(&p.stats.CreatedConnections, 1)
 
@@ -950,31 +991,7 @@ func (p *ConnectionPool) messageLoop(item *ConnItem) {
 			connIDStr, item.RelayAddr,
 			formatBytes(sent), formatBytes(recv), streams)
 
-		// 在锁内收集需要清理的 manager，在锁外调用 HandleConnectionClose。
-		// 原因：HandleConnectionClose 会触发 OnClose 回调，回调中的 cleanup()
-		// 会调用 UnregisterStreamHandler/ReleaseConnection，它们都需要 p.mu.Lock()。
-		// 如果在持有 p.mu 时调用，就会死锁。
-		var mgrToClose *StreamManager
-		p.mu.Lock()
-		for i, ci := range p.pool {
-			if ci == item {
-				p.pool = append(p.pool[:i], p.pool[i+1:]...)
-				atomic.AddInt64(&p.stats.ClosedConnections, 1)
-				break
-			}
-		}
-		if mgr, ok := p.managerByConn[item]; ok {
-			mgrToClose = mgr
-			delete(p.managerByConn, item)
-		}
-		delete(p.pendingHeartbeats, connIDStr)
-		p.mu.Unlock()
-
-		// 锁外通知 StreamManager 清理所有 stream（触发 OnClose 回调）
-		if mgrToClose != nil {
-			mgrToClose.HandleConnectionClose()
-		}
-
+		p.handleConnectionClose(item)
 		// 静默关闭 WebSocket（忽略 "already closed" 错误）
 		ws.Close() // nolint:errcheck
 	}()
@@ -999,6 +1016,46 @@ func (p *ConnectionPool) messageLoop(item *ConnItem) {
 		if ok {
 			mgr.DispatchMessage(msg)
 		}
+	}
+}
+
+// handleConnectionClose removes a failed socket from every pool index before
+// notifying stream owners. This prevents cleanup callbacks from returning the
+// dead connection to the idle pool.
+func (p *ConnectionPool) handleConnectionClose(item *ConnItem) {
+	item.closed.Store(true)
+
+	var mgrToClose *StreamManager
+	removed := false
+	p.mu.Lock()
+	for i, candidate := range p.pool {
+		if candidate == item {
+			p.pool = append(p.pool[:i], p.pool[i+1:]...)
+			removed = true
+			break
+		}
+	}
+	if mgr, ok := p.managerByConn[item]; ok {
+		mgrToClose = mgr
+		delete(p.managerByConn, item)
+		removed = true
+	}
+	for target, candidate := range p.targetToConn {
+		if candidate == item {
+			delete(p.targetToConn, target)
+		}
+	}
+	delete(p.pendingHeartbeats, formatConnID(item.ConnectionID))
+	p.mu.Unlock()
+
+	if item.markIdle() {
+		atomic.AddInt32(&p.activeConnections, -1)
+	}
+	if removed {
+		atomic.AddInt64(&p.stats.ClosedConnections, 1)
+	}
+	if mgrToClose != nil {
+		mgrToClose.HandleConnectionClose()
 	}
 }
 
@@ -1036,7 +1093,7 @@ func (p *ConnectionPool) GetConnectionWithStream(ctx context.Context, targetAddr
 			item := p.pool[len(p.pool)-1]
 			p.pool = p.pool[:len(p.pool)-1]
 
-			if item.WS != nil {
+			if item.WS != nil && !item.closed.Load() {
 				// 获取或创建 StreamManager
 				mgr, ok := p.managerByConn[item]
 				if !ok {
@@ -1054,7 +1111,9 @@ func (p *ConnectionPool) GetConnectionWithStream(ctx context.Context, targetAddr
 				// 尝试立即分配流
 				streamID, allocated := mgr.tryAllocateStream(targetAddr)
 				if allocated {
-					atomic.AddInt32(&p.activeConnections, 1)
+					if item.markActive() {
+						atomic.AddInt32(&p.activeConnections, 1)
+					}
 					p.mu.Unlock()
 
 					p.log.Debug("获取连接+流: [%s] Stream[%02x] -> %s (空闲连接)",
@@ -1070,7 +1129,7 @@ func (p *ConnectionPool) GetConnectionWithStream(ctx context.Context, targetAddr
 		// 2. 检查亲和性连接
 		if targetAddr != "" && p.cfg.EnableMultiplex {
 			if affinityConn, exists := p.targetToConn[targetAddr]; exists {
-				if mgr, ok := p.managerByConn[affinityConn]; ok && affinityConn.WS != nil {
+				if mgr, ok := p.managerByConn[affinityConn]; ok && affinityConn.WS != nil && !affinityConn.closed.Load() {
 					streamID, allocated := mgr.tryAllocateStream(targetAddr)
 					if allocated {
 						p.mu.Unlock()
@@ -1086,7 +1145,7 @@ func (p *ConnectionPool) GetConnectionWithStream(ctx context.Context, targetAddr
 		if p.cfg.EnableMultiplex {
 			minStreams := maxStreams + 1
 			for item, mgr := range p.managerByConn {
-				if item.WS == nil {
+				if item.WS == nil || item.closed.Load() {
 					continue
 				}
 				streamCount := mgr.GetStreamCount()
@@ -1110,7 +1169,7 @@ func (p *ConnectionPool) GetConnectionWithStream(ctx context.Context, targetAddr
 		}
 
 		// 4. 所有连接都满载，需要创建新连接
-		currentSize := idleCount + activeCount + pendingCount
+		currentSize := p.liveConnectionCountLocked() + pendingCount
 
 		if currentSize >= p.cfg.MaxPoolSize {
 			p.mu.Unlock()
@@ -1121,20 +1180,11 @@ func (p *ConnectionPool) GetConnectionWithStream(ctx context.Context, targetAddr
 		p.log.Debug("所有连接已满，触发新连接创建 (当前:%d/%d, 待创建:%d) -> %s",
 			currentSize, p.cfg.MaxPoolSize, pendingCount, targetAddr)
 
-		// 触发连接创建（如果还没有正在创建的连接）
-		// 使用 CompareAndSwap 避免竞态条件：只有一个 goroutine 能成功从 0 -> 1
-		if atomic.CompareAndSwapInt32(&p.pendingConnections, 0, 1) {
-			p.mu.Unlock()
-			go func() {
-				success := p.createConnection("请求触发")
-				if !success {
-					// 创建失败，记录日志（计数器会在后面重置）
-					p.log.Debug("新连接创建失败")
-				}
-				atomic.AddInt32(&p.pendingConnections, -1)
-			}()
-		} else {
-			p.mu.Unlock()
+		p.mu.Unlock()
+		// createConnection performs an atomic capacity reservation. Multiple
+		// requests may race here, but only available slots are allowed through.
+		if pendingCount == 0 {
+			go p.createConnection("请求触发")
 		}
 
 		retryCount++
@@ -1199,7 +1249,7 @@ func (p *ConnectionPool) GetConnection(ctx context.Context, targetAddr string) (
 			item := p.pool[0]
 			p.pool = p.pool[1:]
 
-			if item.WS == nil {
+			if item.WS == nil || item.closed.Load() {
 				continue
 			}
 
@@ -1225,7 +1275,7 @@ func (p *ConnectionPool) GetConnection(ctx context.Context, targetAddr string) (
 		// 检查目标地址亲和性
 		if targetAddr != "" {
 			if affinityConn, exists := p.targetToConn[targetAddr]; exists {
-				if mgr, ok := p.managerByConn[affinityConn]; ok && affinityConn.WS != nil {
+				if mgr, ok := p.managerByConn[affinityConn]; ok && affinityConn.WS != nil && !affinityConn.closed.Load() {
 					streamCount := mgr.GetStreamCount()
 					hasSpace := streamCount < maxStreams
 
@@ -1242,7 +1292,7 @@ func (p *ConnectionPool) GetConnection(ctx context.Context, targetAddr string) (
 		// 3. 如果没有亲和连接，从活跃连接中找最优的
 		if selectedItem == nil {
 			for item, mgr := range p.managerByConn {
-				if item.WS == nil {
+				if item.WS == nil || item.closed.Load() {
 					continue
 				}
 
@@ -1265,13 +1315,16 @@ func (p *ConnectionPool) GetConnection(ctx context.Context, targetAddr string) (
 
 	// 如果从空闲池选择了连接，增加活跃计数
 	if isFromPool {
-		atomic.AddInt32(&p.activeConnections, 1)
+		if selectedItem.markActive() {
+			atomic.AddInt32(&p.activeConnections, 1)
+		}
 	}
 
 	p.mu.Unlock()
 
 	// 释放锁后，批量关闭低质量连接（避免死锁）
 	for _, conn := range lowQualityConns {
+		conn.closed.Store(true)
 		conn.WS.Close()
 	}
 
@@ -1285,8 +1338,7 @@ func (p *ConnectionPool) GetConnection(ctx context.Context, targetAddr string) (
 	}
 
 	// 没有可用连接，检查是否能新建
-	currentSize := len(p.pool) + int(atomic.LoadInt32(&p.activeConnections)) +
-		int(atomic.LoadInt32(&p.pendingConnections))
+	currentSize := p.liveConnectionCount() + int(atomic.LoadInt32(&p.pendingConnections))
 	if currentSize < p.cfg.MaxPoolSize {
 		go p.createConnection("请求触发")
 	}
@@ -1331,6 +1383,16 @@ func (p *ConnectionPool) ReleaseConnection(item *ConnItem) {
 	}
 
 	if streamCount == 0 {
+		if item.markIdle() {
+			atomic.AddInt32(&p.activeConnections, -1)
+		}
+		if item.closed.Load() {
+			return
+		}
+		if _, exists := containsConn(p.pool, item); exists {
+			return
+		}
+
 		// 没有活跃的 stream，放回池中以供重用
 		// 注意：不删除 managerByConn 条目，因为 messageLoop 需要它来分发消息
 		// 连接会在关闭时由 messageLoop 的 defer 函数清理
@@ -1350,7 +1412,6 @@ func (p *ConnectionPool) ReleaseConnection(item *ConnItem) {
 		copy(p.pool[insertPos+1:], p.pool[insertPos:])
 		p.pool[insertPos] = item
 
-		atomic.AddInt32(&p.activeConnections, -1)
 	}
 	// 如果还有活跃的 stream，连接保持活跃状态，直到最后一个释放
 }
@@ -1478,8 +1539,7 @@ func (p *ConnectionPool) maintainLoop() {
 
 // maintainPool 维护连接池
 func (p *ConnectionPool) maintainPool() {
-	currentSize := len(p.pool) + int(atomic.LoadInt32(&p.activeConnections)) +
-		int(atomic.LoadInt32(&p.pendingConnections))
+	currentSize := p.liveConnectionCount() + int(atomic.LoadInt32(&p.pendingConnections))
 
 	if currentSize < int(p.currentMinPoolSize) {
 		go p.createConnection("维护补给")
@@ -1510,7 +1570,7 @@ func (p *ConnectionPool) maintainPool() {
 		streamThreshold := max(int(float64(maxStreams)*0.6), 1)
 
 		for item, mgr := range p.managerByConn {
-			if item.WS == nil {
+			if item.WS == nil || item.closed.Load() {
 				continue
 			}
 			streamCount := mgr.GetStreamCount()
@@ -1556,10 +1616,9 @@ func (p *ConnectionPool) cullLoop() {
 // cullOldConnections 清理过期连接
 func (p *ConnectionPool) cullOldConnections() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	beforeSize := len(p.pool)
 	if beforeSize == 0 {
+		p.mu.Unlock()
 		return
 	}
 
@@ -1567,27 +1626,26 @@ func (p *ConnectionPool) cullOldConnections() {
 	keepMin := min(p.cfg.MinPoolSize, int(p.currentMinPoolSize))
 
 	newPool := make([]*ConnItem, 0, beforeSize)
-	removed := 0
+	expired := make([]*ConnItem, 0)
 
 	// 按创建时间排序
 	for _, item := range p.pool {
-		if removed < beforeSize-keepMin && now.Sub(item.CreatedAt) > p.cfg.GetConnectionTTL() {
-			item.WS.Close()
-			// 同步清理 StreamManager，避免 GetConnectionWithStream 命中已死连接
-			if mgr, ok := p.managerByConn[item]; ok {
-				mgr.HandleConnectionClose()
-				delete(p.managerByConn, item)
-			}
-			atomic.AddInt64(&p.stats.ClosedConnections, 1)
-			removed++
+		if len(expired) < beforeSize-keepMin && now.Sub(item.CreatedAt) > p.cfg.GetConnectionTTL() {
+			item.closed.Store(true)
+			expired = append(expired, item)
 		} else {
 			newPool = append(newPool, item)
 		}
 	}
 
 	p.pool = newPool
-	if removed > 0 {
-		p.log.Debug("清理过期连接: 清除%d个 (%d -> %d)", removed, beforeSize, len(p.pool))
+	p.mu.Unlock()
+
+	for _, item := range expired {
+		item.WS.Close() // nolint:errcheck
+	}
+	if len(expired) > 0 {
+		p.log.Debug("清理过期连接: 清除%d个 (%d -> %d)", len(expired), beforeSize, len(newPool))
 	}
 }
 
@@ -1608,8 +1666,7 @@ func (p *ConnectionPool) statsLoop() {
 
 // logStats 输出统计日志
 func (p *ConnectionPool) logStats() {
-	total := len(p.pool) + int(atomic.LoadInt32(&p.activeConnections)) +
-		int(atomic.LoadInt32(&p.pendingConnections))
+	total := p.liveConnectionCount() + int(atomic.LoadInt32(&p.pendingConnections))
 
 	if total == 0 {
 		return
@@ -1689,14 +1746,15 @@ func (p *ConnectionPool) sendHeartbeat() {
 	now := time.Now()
 	timeout := 0
 
-	for _, item := range p.pool {
-		if item.WS != nil {
+	for item := range p.managerByConn {
+		if item.WS != nil && !item.closed.Load() {
 			connIDStr := fmt.Sprintf("%02x%02x%02x", item.ConnectionID[0], item.ConnectionID[1], item.ConnectionID[2])
 
 			// 检查是否有待响应的心跳
 			if lastPing, ok := p.pendingHeartbeats[connIDStr]; ok {
 				if now.Sub(lastPing) > p.cfg.GetHeartbeatTimeout() {
 					p.log.Debug("连接 [%s] 心跳超时，移除", connIDStr)
+					item.closed.Store(true)
 					item.WS.Close()
 					delete(p.pendingHeartbeats, connIDStr)
 					timeout++
@@ -1706,6 +1764,7 @@ func (p *ConnectionPool) sendHeartbeat() {
 				if err := item.WriteMessage(websocket.PingMessage, nil); err == nil {
 					p.pendingHeartbeats[connIDStr] = now
 				} else {
+					item.closed.Store(true)
 					item.WS.Close()
 				}
 			}
@@ -1714,6 +1773,28 @@ func (p *ConnectionPool) sendHeartbeat() {
 
 	if timeout > 0 {
 		p.log.Debug("心跳超时: %d 个连接", timeout)
+	}
+}
+
+// Reconnect closes all WebSockets so the maintenance loop recreates them on
+// the currently available network. The VPN/TUN interface remains untouched.
+func (p *ConnectionPool) Reconnect(reason string) {
+	p.mu.RLock()
+	items := make([]*ConnItem, 0, len(p.managerByConn))
+	for item := range p.managerByConn {
+		items = append(items, item)
+	}
+	p.mu.RUnlock()
+
+	if len(items) == 0 {
+		return
+	}
+	p.log.Info("网络变化，重建 %d 条 WebSocket 连接: %s", len(items), reason)
+	for _, item := range items {
+		item.closed.Store(true)
+		if item.WS != nil {
+			item.WS.Close() // nolint:errcheck
+		}
 	}
 }
 
@@ -1837,9 +1918,11 @@ func (p *ConnectionPool) Close() {
 
 	// 锁外关闭连接（WS.Close 会触发 messageLoop 退出，不影响锁）
 	for _, item := range poolItems {
+		item.closed.Store(true)
 		item.WS.Close()
 	}
 	for item, mgr := range managerItems {
+		item.closed.Store(true)
 		mgr.HandleConnectionClose()
 		item.WS.Close()
 	}

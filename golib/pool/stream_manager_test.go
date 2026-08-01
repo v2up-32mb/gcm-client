@@ -6,6 +6,40 @@ import (
 	"time"
 )
 
+func TestHandleConnectionCloseAllowsCleanupCallbacks(t *testing.T) {
+	conn := &ConnItem{
+		ConnectionID: []byte{0x01, 0x02, 0x03},
+		Traffic:      &TrafficCounter{},
+	}
+	sm := NewStreamManager(conn, 1, 256*1024, 32*1024, 1024*1024, 5*time.Second)
+	streamID, ok := sm.tryAllocateStream("example.com:443")
+	if !ok {
+		t.Fatal("stream allocation failed")
+	}
+	sm.RegisterHandler(streamID, &StreamHandler{
+		OnClose: func() {
+			// This mirrors the SOCKS cleanup path, which unregisters the stream.
+			sm.UnregisterStream(streamID)
+		},
+	})
+
+	done := make(chan struct{})
+	go func() {
+		sm.HandleConnectionClose()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("HandleConnectionClose deadlocked while running cleanup callback")
+	}
+
+	if got := sm.GetStreamCount(); got != 0 {
+		t.Fatalf("stream manager retained %d streams after connection close", got)
+	}
+}
+
 // TestBitmapAllocation 测试位图分配算法的基本功能
 func TestBitmapAllocation(t *testing.T) {
 	// 创建测试用的 StreamManager

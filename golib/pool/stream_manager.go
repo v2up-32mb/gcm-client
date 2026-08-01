@@ -321,25 +321,45 @@ func (sm *StreamManager) DispatchMessage(msg *protocol.Message) {
 
 // HandleConnectionClose 处理连接关闭
 func (sm *StreamManager) HandleConnectionClose() {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
 	connIDStr := formatConnID(sm.conn.ConnectionID)
-	sm.log.Debug("连接 [%s] 关闭，清理 %d 个 stream", connIDStr, len(sm.streams))
+	sm.mu.RLock()
+	handlers := make([]*StreamHandler, 0, len(sm.streams))
+	for _, stream := range sm.streams {
+		if stream.Handler != nil {
+			handlers = append(handlers, stream.Handler)
+		}
+	}
+	streamCount := len(sm.streams)
+	sm.mu.RUnlock()
 
-	// 通知所有 stream 连接已关闭
-	for _, s := range sm.streams {
-		if s.Handler != nil && s.Handler.OnClose != nil {
-			s.Handler.OnClose()
+	sm.log.Debug("连接 [%s] 关闭，清理 %d 个 stream", connIDStr, streamCount)
+
+	// 回调可能注销 stream，不能在持有 sm.mu 时执行。
+	for _, handler := range handlers {
+		if handler.OnClose != nil {
+			handler.OnClose()
 		}
 	}
 
-	// 清空所有 stream
+	// 清理回调未主动注销的 stream。
+	sm.mu.Lock()
+	remaining := len(sm.streams)
 	sm.streams = make(map[byte]*Stream)
-
-	// 清空位图（重置所有分配状态）
 	sm.allocBitmap = [4]uint64{}
 	sm.nextHint = 0
+	sm.mu.Unlock()
+
+	if remaining > 0 {
+		sm.conn.mu.Lock()
+		sm.conn.Streams -= remaining
+		if sm.conn.Streams < 0 {
+			sm.conn.Streams = 0
+		}
+		sm.conn.mu.Unlock()
+		for i := 0; i < remaining; i++ {
+			sm.conn.Traffic.DecStream()
+		}
+	}
 }
 
 // GetStreamCount 获取当前活跃 stream 数量
