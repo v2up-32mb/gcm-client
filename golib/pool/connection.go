@@ -1010,23 +1010,7 @@ func (p *ConnectionPool) messageLoop(item *ConnItem) {
 		if err := ws.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
 			return err
 		}
-
-		p.mu.Lock()
-		defer p.mu.Unlock()
-
-		// 计算 RTT 并更新连接信息
-		if lastPing, ok := p.pendingHeartbeats[connIDStr]; ok {
-			rtt := time.Since(lastPing)
-			// 使用指数移动平均 (EMA) 更新 RTT，平滑波动
-			// 新RTT = 0.7 * 旧RTT + 0.3 * 测量RTT
-			oldRTT := item.RTT.Load()
-			newRTT := (oldRTT*7/10 + rtt.Nanoseconds()*3/10)
-			item.RTT.Store(newRTT)
-			// 记录 RTT 到历史缓冲区
-			item.RecordRTT(rtt)
-		}
-
-		delete(p.pendingHeartbeats, connIDStr)
+		p.acknowledgeHeartbeat(item, connIDStr, "Pong")
 		return nil
 	})
 
@@ -1046,8 +1030,18 @@ func (p *ConnectionPool) messageLoop(item *ConnItem) {
 	for {
 		_, data, err := ws.ReadMessage()
 		if err != nil {
+			if !item.closed.Load() {
+				p.log.Warn("WS[%s] 读取失败: %v", connIDStr, err)
+			}
 			return
 		}
+		if err := ws.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+			p.log.Warn("WS[%s] 刷新读取 deadline 失败: %v", connIDStr, err)
+			return
+		}
+		// Application data is also proof that the path is alive. This matters
+		// for busy streams where a Pong can be delayed behind data frames.
+		p.acknowledgeHeartbeat(item, connIDStr, "数据")
 
 		msg, err := protocol.Decode(data)
 		if err != nil {
@@ -1063,6 +1057,26 @@ func (p *ConnectionPool) messageLoop(item *ConnItem) {
 		if ok {
 			mgr.DispatchMessage(msg)
 		}
+	}
+}
+
+func (p *ConnectionPool) acknowledgeHeartbeat(item *ConnItem, connIDStr, source string) {
+	p.mu.Lock()
+	lastPing, pending := p.pendingHeartbeats[connIDStr]
+	if pending {
+		delete(p.pendingHeartbeats, connIDStr)
+	}
+	p.mu.Unlock()
+	if !pending {
+		return
+	}
+
+	rtt := time.Since(lastPing)
+	oldRTT := item.RTT.Load()
+	item.RTT.Store(oldRTT*7/10 + rtt.Nanoseconds()*3/10)
+	item.RecordRTT(rtt)
+	if p.log != nil {
+		p.log.Debug("WS[%s] 心跳确认(%s): %dms", connIDStr, source, rtt.Milliseconds())
 	}
 }
 

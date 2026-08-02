@@ -178,6 +178,29 @@ func TestHeartbeatDoesNotHoldPoolLockDuringWrite(t *testing.T) {
 	}
 }
 
+func TestApplicationDataAcknowledgesPendingHeartbeat(t *testing.T) {
+	conn := &ConnItem{
+		ConnectionID: []byte{0x13, 0x14, 0x15},
+		Traffic:      &TrafficCounter{},
+	}
+	connID := formatConnID(conn.ConnectionID)
+	p := &ConnectionPool{
+		log: logger.GetLogger("PoolTest"),
+		pendingHeartbeats: map[string]time.Time{
+			connID: time.Now().Add(-20 * time.Millisecond),
+		},
+	}
+
+	p.acknowledgeHeartbeat(conn, connID, "data")
+
+	if len(p.pendingHeartbeats) != 0 {
+		t.Fatal("application data did not clear the pending heartbeat")
+	}
+	if got := time.Duration(conn.RTT.Load()); got <= 0 {
+		t.Fatalf("RTT = %v, want positive sample", got)
+	}
+}
+
 func newTestWebSocket(t *testing.T) *websocket.Conn {
 	t.Helper()
 	stopServer := make(chan struct{})

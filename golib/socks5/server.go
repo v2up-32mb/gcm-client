@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -23,12 +22,15 @@ import (
 )
 
 const (
-	socks5Version = 0x05
-	authNone      = 0x00
-	cmdConnect    = 0x01
-	atypIPv4      = 0x01
-	atypDomain    = 0x03
-	atypIPv6      = 0x04
+	socks5Version           = 0x05
+	authNone                = 0x00
+	cmdConnect              = 0x01
+	atypIPv4                = 0x01
+	atypDomain              = 0x03
+	atypIPv6                = 0x04
+	downstreamQueueSize     = 64
+	downstreamQueueTimeout  = 2 * time.Second
+	localClientWriteTimeout = 10 * time.Second
 )
 
 // Server SOCKS5 服务器
@@ -260,17 +262,14 @@ func (s *Server) createTunnel(clientConn net.Conn, originalHost, resolvedHost st
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.GetTunnelTimeout())
-	defer cancel()
-
-	// 构造目标地址字符串（用于亲和性路由，使用解析后的地址）
 	targetAddr := fmt.Sprintf("%s:%d", resolvedHost, port)
-
-	// 记录请求开始时间（用于延迟统计）
 	requestStartTime := time.Now()
 
-	// 原子化地获取连接并分配流 ID
+	// TunnelTimeout only bounds connection acquisition and the CONNECT handshake.
+	// It must not impose a lifetime on an established TCP tunnel.
+	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.GetTunnelTimeout())
 	connItem, streamID, err := s.pool.GetConnectionWithStream(ctx, targetAddr)
+	cancel()
 	if err != nil {
 		s.log.Warn("获取连接失败: %v", err)
 		return
@@ -286,83 +285,56 @@ func (s *Server) createTunnel(clientConn net.Conn, originalHost, resolvedHost st
 	atomic.AddInt32(&s.activeTunnels, 1)
 	defer atomic.AddInt32(&s.activeTunnels, -1)
 
-	// 发送 CONNECT 消息（使用解析后的地址）
-	connectMsg := protocol.NewConnectMessage(streamID, resolvedHost, port)
-	if err := connItem.WriteMessage(websocket.BinaryMessage, connectMsg.Encode()); err != nil {
-		s.log.Error("发送 CONNECT 消息失败: %v", err)
-		connItem.RecordFailure()
-		s.pool.RetireConnection(connItem, "发送 CONNECT 消息失败")
-		return
-	}
-
-	// 乐观响应：发送 CONNECT 后立即回复 SOCKS5 成功，不等 CONNECTED 返回
-	// 这样浏览器可以提前开始 TLS 握手，省一个 RTT 的等待
-	socks5Reply := []byte{socks5Version, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}
-	if _, err := clientConn.Write(socks5Reply); err != nil {
-		s.log.Debug("乐观发送 SOCKS5 响应失败: %v", err)
-		connItem.RecordFailure()
-		s.pool.UnregisterStreamHandler(connItem, streamID)
-		s.pool.ReleaseConnection(connItem)
-		return
-	}
-
-	// 创建关闭信号通道
 	closed := make(chan struct{})
+	connectedSignal := make(chan struct{})
+	downstream := make(chan []byte, downstreamQueueSize)
+	var connected atomic.Bool
+	var bytesSent atomic.Int64
+	var bytesReceived atomic.Int64
 
-	// connected 记录 CONNECTED 是否已到达（不再阻塞数据转发）
-	connected := false
-	var bytesSent, bytesReceived int64
-
-	// 清理函数
-	var cleanupOnce sync.Once
+	var cleanupStarted atomic.Bool
 	cleanup := func() {
-		cleanupOnce.Do(func() {
-			// 主动发送 CLOSE 消息到 Worker，通知 Stream 关闭
-			closeMsg := protocol.NewCloseMessage(streamID)
-			if err := connItem.WriteMessage(websocket.BinaryMessage, closeMsg.Encode()); err != nil {
-				s.log.Debug("发送 CLOSE 消息失败: %v", err)
-			} else {
-				s.log.Debug("发送 CLOSE 消息 -> Stream[%s]", streamIDStr)
-			}
+		if !cleanupStarted.CompareAndSwap(false, true) {
+			return
+		}
 
-			clientConn.Close()
-			targetAddr, _ := s.pool.UnregisterStreamHandler(connItem, streamID)
-			s.pool.ReleaseConnection(connItem)
-			elapsed := time.Since(requestStartTime)
-			if bytesSent > 0 || bytesReceived > 0 {
-				totalBytes := bytesSent + bytesReceived
-				speedKBps := float64(totalBytes) / 1024.0 / elapsed.Seconds()
-				s.log.Info("请求完成 -> %s:%d | WS[%s] Stream[%s] 耗时=%dms ↑%s ↓%s 速度=%.1fKB/s",
-					originalHost, port, connIDStr, streamIDStr, elapsed.Milliseconds(),
-					formatBytes(bytesSent), formatBytes(bytesReceived), speedKBps)
-			}
-			s.log.Debug("清理完成: WS[%s] Stream[%s] -> %s", connIDStr, streamIDStr, targetAddr)
+		// 主动发送 CLOSE 消息到 Worker，通知 Stream 关闭
+		closeMsg := protocol.NewCloseMessage(streamID)
+		if err := connItem.WriteMessage(websocket.BinaryMessage, closeMsg.Encode()); err != nil {
+			s.log.Debug("发送 CLOSE 消息失败: %v", err)
+		} else {
+			s.log.Debug("发送 CLOSE 消息 -> Stream[%s]", streamIDStr)
+		}
 
-			// 通知主 goroutine 连接已关闭
-			select {
-			case <-closed:
-				// 已经关闭
-			default:
-				close(closed)
-			}
-		})
+		clientConn.Close()
+		targetAddr, _ := s.pool.UnregisterStreamHandler(connItem, streamID)
+		s.pool.ReleaseConnection(connItem)
+		elapsed := time.Since(requestStartTime)
+		sent := bytesSent.Load()
+		received := bytesReceived.Load()
+		if sent > 0 || received > 0 {
+			totalBytes := sent + received
+			speedKBps := float64(totalBytes) / 1024.0 / elapsed.Seconds()
+			s.log.Info("请求完成 -> %s:%d | WS[%s] Stream[%s] 耗时=%dms ↑%s ↓%s 速度=%.1fKB/s",
+				originalHost, port, connIDStr, streamIDStr, elapsed.Milliseconds(),
+				formatBytes(sent), formatBytes(received), speedKBps)
+		}
+		s.log.Debug("清理完成: WS[%s] Stream[%s] -> %s", connIDStr, streamIDStr, targetAddr)
+
+		close(closed)
 	}
 
-	// 注册流处理器
 	handler := &pool.StreamHandler{
 		OnMessage: func(msg *protocol.Message) {
 			if msg.StreamID != streamID {
 				return
 			}
 
-			if !connected {
-				if msg.Type == protocol.MsgTypeConnected {
-					connected = true
-					// 增加 Stream 计数
-					connItem.Traffic.IncStream()
+			switch msg.Type {
+			case protocol.MsgTypeConnected:
+				if connected.CompareAndSwap(false, true) {
 					// 记录请求成功
 					connItem.RecordSuccess()
-					// 记录 Stream 级别的 RTT 和成功（从发送 CONNECT 到收到 CONNECTED）
 					connectLatency := time.Since(requestStartTime)
 					stream := s.pool.GetStream(connItem, streamID)
 					if stream != nil {
@@ -371,10 +343,23 @@ func (s *Server) createTunnel(clientConn net.Conn, originalHost, resolvedHost st
 					}
 					s.log.Info("连接建立 -> %s:%d | WS[%s] Stream[%s] 延迟=%dms",
 						originalHost, port, connIDStr, streamIDStr, connectLatency.Milliseconds())
-					// SOCKS5 响应已在发 CONNECT 后乐观发送，此处无需再发
-				} else if msg.Type == protocol.MsgTypeClose {
-					// CONNECTED 之前收到 CLOSE：乐观响应已发送，无法收回
-					// 直接 close clientConn 让浏览器收到 RST 重连
+					close(connectedSignal)
+				}
+			case protocol.MsgTypeData:
+				if !connected.Load() || len(msg.Data) == 0 {
+					return
+				}
+				data := append([]byte(nil), msg.Data...)
+				switch enqueueDownstream(downstream, closed, data, downstreamQueueTimeout) {
+				case downstreamClosed:
+					return
+				case downstreamTimedOut:
+					s.log.Warn("下行队列拥塞，关闭 Stream[%s] 以保护 WebSocket 读循环", streamIDStr)
+					connItem.RecordFailure()
+					go cleanup()
+				}
+			case protocol.MsgTypeClose:
+				if !connected.Load() {
 					connItem.RecordFailure()
 					stream := s.pool.GetStream(connItem, streamID)
 					if stream != nil {
@@ -382,33 +367,8 @@ func (s *Server) createTunnel(clientConn net.Conn, originalHost, resolvedHost st
 					}
 					s.log.Warn("连接建立前失败: %s:%d | WS[%s] Stream[%s]",
 						originalHost, port, connIDStr, streamIDStr)
-					cleanup()
 				}
-			} else {
-				if msg.Type == protocol.MsgTypeData {
-					if len(msg.Data) > 0 {
-						// 窗口流控：消耗接收窗口
-						stream := s.pool.GetStream(connItem, streamID)
-						if stream != nil {
-							if err := stream.ConsumeRecvWindow(len(msg.Data)); err != nil {
-								s.log.Debug("接收窗口耗尽: %v", err)
-								cleanup()
-								return
-							}
-						}
-
-						bytesReceived += int64(len(msg.Data))
-						// 更新连接流量统计（接收）
-						connItem.Traffic.AddRecv(int64(len(msg.Data)))
-						if _, err := clientConn.Write(msg.Data); err != nil {
-							s.log.Debug("写入客户端失败: %v", err)
-							cleanup()
-							return
-						}
-					}
-				} else if msg.Type == protocol.MsgTypeClose {
-					cleanup()
-				}
+				go cleanup()
 			}
 		},
 		OnClose: func() {
@@ -419,7 +379,46 @@ func (s *Server) createTunnel(clientConn net.Conn, originalHost, resolvedHost st
 		},
 	}
 
+	// Register before CONNECT so a fast CONNECTED response cannot be lost.
 	s.pool.RegisterStreamHandler(connItem, streamID, handler, targetAddr)
+
+	connectMsg := protocol.NewConnectMessage(streamID, resolvedHost, port)
+	if err := connItem.WriteMessage(websocket.BinaryMessage, connectMsg.Encode()); err != nil {
+		s.log.Error("发送 CONNECT 消息失败: %v", err)
+		connItem.RecordFailure()
+		s.pool.RetireConnection(connItem, "发送 CONNECT 消息失败")
+		return
+	}
+
+	// Optimistically acknowledge SOCKS after CONNECT is on the wire. The
+	// registered handler now guarantees CONNECTED cannot be missed.
+	socks5Reply := []byte{socks5Version, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}
+	if err := writeAllWithDeadline(clientConn, socks5Reply, localClientWriteTimeout); err != nil {
+		s.log.Debug("乐观发送 SOCKS5 响应失败: %v", err)
+		connItem.RecordFailure()
+		cleanup()
+		return
+	}
+
+	// Keep local TCP backpressure away from the single WebSocket read loop so
+	// control frames and other multiplexed streams continue to make progress.
+	// Start this only after the SOCKS reply to preserve write ordering.
+	go func() {
+		for {
+			select {
+			case <-closed:
+				return
+			case data := <-downstream:
+				if err := writeAllWithDeadline(clientConn, data, localClientWriteTimeout); err != nil {
+					s.log.Debug("写入客户端失败: %v", err)
+					cleanup()
+					return
+				}
+				bytesReceived.Add(int64(len(data)))
+				connItem.Traffic.AddRecv(int64(len(data)))
+			}
+		}
+	}()
 
 	// 客户端数据转发
 	go func() {
@@ -432,51 +431,121 @@ func (s *Server) createTunnel(clientConn net.Conn, originalHost, resolvedHost st
 				return
 			}
 
-			// 乐观响应已发送，始终转发数据（不等 CONNECTED）
-			// 窗口流控：等待发送窗口有足够空间
-			stream := s.pool.GetStream(connItem, streamID)
-			if stream != nil {
-				if err := stream.WaitForSendWindow(n); err != nil {
-					s.log.Debug("发送窗口等待超时: %v", err)
-					cleanup()
-					return
-				}
-			}
-
-			bytesSent += int64(n)
-			// 更新连接流量统计（发送）
-			connItem.Traffic.AddSent(int64(n))
+			// The protocol has no WINDOW_UPDATE message. WebSocket write
+			// backpressure is the only valid upload flow control; a cumulative
+			// local window would permanently stall long-lived streams.
 			dataMsg := protocol.NewDataMessage(streamID, buf[:n])
 			if err := connItem.WriteMessage(websocket.BinaryMessage, dataMsg.Encode()); err != nil {
 				s.pool.RetireConnection(connItem, "发送数据消息失败")
 				cleanup()
 				return
 			}
+			bytesSent.Add(int64(n))
+			connItem.Traffic.AddSent(int64(n))
 		}
 	}()
 
-	// 乐观响应已发送，等待连接关闭或超时
-	select {
-	case <-closed:
-		// 连接已关闭（正常或异常）
-		if !connected {
-			// CONNECTED 从未到达
+	if waitForTunnel(closed, connectedSignal, s.cfg.GetTunnelTimeout()) == tunnelClosed {
+		if !connected.Load() {
 			s.log.Debug("连接未建立即关闭: %s:%d | WS[%s] Stream[%s]",
 				originalHost, port, connIDStr, streamIDStr)
 		}
-	case <-ctx.Done():
-		// 上下文超时或取消
-		if !connected {
-			s.log.Warn("隧道超时: %s:%d | WS[%s] Stream[%s] 延迟=%dms",
-				originalHost, port, connIDStr, streamIDStr, time.Since(requestStartTime).Milliseconds())
-			connItem.RecordFailure()
-			stream := s.pool.GetStream(connItem, streamID)
-			if stream != nil {
-				stream.RecordTimeout()
-			}
-			s.pool.RetireConnection(connItem, "隧道建立超时")
+		return
+	}
+
+	s.log.Warn("隧道超时: %s:%d | WS[%s] Stream[%s] 延迟=%dms",
+		originalHost, port, connIDStr, streamIDStr, time.Since(requestStartTime).Milliseconds())
+	connItem.RecordFailure()
+	stream := s.pool.GetStream(connItem, streamID)
+	if stream != nil {
+		stream.RecordTimeout()
+	}
+	s.pool.RetireConnection(connItem, "隧道建立超时")
+	cleanup()
+}
+
+type tunnelWaitResult uint8
+
+const (
+	tunnelClosed tunnelWaitResult = iota
+	tunnelConnectTimeout
+)
+
+func waitForTunnel(closed, connected <-chan struct{}, timeout time.Duration) tunnelWaitResult {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-closed:
+		return tunnelClosed
+	case <-connected:
+		<-closed
+		return tunnelClosed
+	case <-timer.C:
+		// CONNECTED and the timer can become ready together. Prefer the
+		// established tunnel and wait for a real endpoint close.
+		select {
+		case <-connected:
+			<-closed
+			return tunnelClosed
+		default:
+			return tunnelConnectTimeout
 		}
-		cleanup()
+	}
+}
+
+func writeAllWithDeadline(conn net.Conn, data []byte, timeout time.Duration) error {
+	if timeout > 0 {
+		if err := conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+			return err
+		}
+		defer conn.SetWriteDeadline(time.Time{}) //nolint:errcheck
+	}
+	for len(data) > 0 {
+		n, err := conn.Write(data)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrUnexpectedEOF
+		}
+		data = data[n:]
+	}
+	return nil
+}
+
+type downstreamEnqueueResult uint8
+
+const (
+	downstreamQueued downstreamEnqueueResult = iota
+	downstreamClosed
+	downstreamTimedOut
+)
+
+func enqueueDownstream(queue chan<- []byte, closed <-chan struct{}, data []byte, timeout time.Duration) downstreamEnqueueResult {
+	select {
+	case <-closed:
+		return downstreamClosed
+	default:
+	}
+
+	select {
+	case queue <- data:
+		return downstreamQueued
+	case <-closed:
+		return downstreamClosed
+	default:
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case queue <- data:
+		return downstreamQueued
+	case <-closed:
+		return downstreamClosed
+	case <-timer.C:
+		return downstreamTimedOut
 	}
 }
 

@@ -40,6 +40,29 @@ func TestHandleConnectionCloseAllowsCleanupCallbacks(t *testing.T) {
 	}
 }
 
+func TestStreamTrafficCountBalancesAtAllocationBoundary(t *testing.T) {
+	conn := &ConnItem{
+		ConnectionID: []byte{0x04, 0x05, 0x06},
+		Traffic:      &TrafficCounter{},
+	}
+	sm := NewStreamManager(conn, 1, 256*1024, 32*1024, 1024*1024, 5*time.Second)
+	streamID, ok := sm.tryAllocateStream("example.com:443")
+	if !ok {
+		t.Fatal("stream allocation failed")
+	}
+
+	_, _, active := conn.Traffic.GetSnapshot()
+	if active != 1 {
+		t.Fatalf("active streams after allocation = %d, want 1", active)
+	}
+
+	sm.UnregisterStream(streamID)
+	_, _, active = conn.Traffic.GetSnapshot()
+	if active != 0 {
+		t.Fatalf("active streams after unregister = %d, want 0", active)
+	}
+}
+
 // TestBitmapAllocation 测试位图分配算法的基本功能
 func TestBitmapAllocation(t *testing.T) {
 	// 创建测试用的 StreamManager
