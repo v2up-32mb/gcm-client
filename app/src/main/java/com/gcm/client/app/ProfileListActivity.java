@@ -230,6 +230,7 @@ public class ProfileListActivity extends AppCompatActivity implements ProfileAda
         popup.getMenu().add(0, 1, 0, "导入");
         popup.getMenu().add(0, 2, 0, "新增");
         popup.getMenu().add(0, 3, 0, "设置");
+        popup.getMenu().add(0, 4, 0, getString(R.string.view_runtime_logs));
 
         popup.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
@@ -241,6 +242,9 @@ public class ProfileListActivity extends AppCompatActivity implements ProfileAda
                     return true;
                 case 3:
                     startActivity(new Intent(this, SettingsActivity.class));
+                    return true;
+                case 4:
+                    startActivity(new Intent(this, RuntimeLogActivity.class));
                     return true;
             }
             return false;
@@ -467,15 +471,12 @@ public class ProfileListActivity extends AppCompatActivity implements ProfileAda
         String prefIp = prefs.getPrefIp();
         String fallbackIp = prefs.getFallbackIp();
         String userId = prefs.getUserID();
-        // ECH 参数：dns= DoH 服务器，domain= ECH 查询域名，disable_ech 仅在为 true 时导出
-        String echDns = prefs.getEchDns();
-        String echDomain = prefs.getEchDomain();
         boolean disableEch = prefs.getDisableEch();
 
         // 恢复原配置
         prefs.setCurrentProfileId(originalId);
 
-        // 构建查询参数：ip= 优选中转节点，fip= 出口代理 IP，user_id= 用户标识，dns=/domain= ECH
+        // 构建配置级查询参数：ip= 优选中转节点，fip= 出口代理 IP，user_id= 用户标识。
         StringBuilder query = new StringBuilder();
         if (!prefIp.isEmpty()) {
             query.append("ip=").append(prefIp);
@@ -487,14 +488,6 @@ public class ProfileListActivity extends AppCompatActivity implements ProfileAda
         if (!userId.isEmpty()) {
             if (query.length() > 0) query.append("&");
             query.append("user_id=").append(userId);
-        }
-        if (!echDns.isEmpty()) {
-            if (query.length() > 0) query.append("&");
-            query.append("dns=").append(echDns);
-        }
-        if (!echDomain.isEmpty()) {
-            if (query.length() > 0) query.append("&");
-            query.append("domain=").append(echDomain);
         }
         if (disableEch) {
             if (query.length() > 0) query.append("&");
@@ -665,12 +658,11 @@ public class ProfileListActivity extends AppCompatActivity implements ProfileAda
             wssAddr = "wss://" + wssAddr;
         }
 
-        // 解析查询参数：ip= 优选中转节点，fip= 出口代理 IP，user_id= 用户标识，dns=/domain= ECH
+        // 解析查询参数：ip= 优选中转节点，fip= 出口代理 IP，user_id= 用户标识。
+        // 旧文档中的 dns/domain 参数被忽略，它们现在属于全局设置。
         String prefIp = "";
         String fallbackIp = "";
         String userId = "";
-        String echDns = "";
-        String echDomain = "";
         boolean disableEch = false;
         if (!query.isEmpty()) {
             String[] pairs = query.split("&");
@@ -688,12 +680,6 @@ public class ProfileListActivity extends AppCompatActivity implements ProfileAda
                         case "fip":
                         case "fallbackip":
                             fallbackIp = value;
-                            break;
-                        case "dns":
-                            echDns = value;
-                            break;
-                        case "domain":
-                            echDomain = value;
                             break;
                         case "disable_ech":
                             // 1/true/yes 表示禁用 ECH
@@ -721,13 +707,12 @@ public class ProfileListActivity extends AppCompatActivity implements ProfileAda
         // 使用这些参数创建新配置
         String newId = UUID.randomUUID().toString();
         // 询问用户配置名称
-        showImportNameDialog(newId, defaultName, wssAddr, prefIp, fallbackIp, userId, echDns, echDomain, disableEch);
+        showImportNameDialog(newId, defaultName, wssAddr, prefIp, fallbackIp, userId, disableEch);
     }
 
     private void showImportNameDialog(final String id, final String defaultName,
                                       final String wssAddr, final String prefIp,
                                       final String fallbackIp, final String userId,
-                                      final String echDns, final String echDomain,
                                       final boolean disableEch) {
         final EditText input = new EditText(this);
         input.setText(defaultName);
@@ -756,8 +741,6 @@ public class ProfileListActivity extends AppCompatActivity implements ProfileAda
                     prefs.setPrefIp(prefIp);
                     if (!fallbackIp.isEmpty()) prefs.setFallbackIp(fallbackIp);
                     prefs.setUserID(userId);
-                    if (!echDns.isEmpty()) prefs.setEchDns(echDns);
-                    if (!echDomain.isEmpty()) prefs.setEchDomain(echDomain);
                     prefs.setDisableEch(disableEch);
 
                     // 恢复原配置

@@ -17,12 +17,6 @@
             android:textSize="18sp"
             android:paddingBottom="16dp"/>
 
-        <Button
-            android:id="@+id/btn_runtime_logs"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/view_runtime_logs" />
-
         <!-- 代理模式 -->
         <TextView
             android:text="代理模式"
@@ -109,6 +103,79 @@
             android:hint="1080"
             android:inputType="number"
             android:singleLine="true"/>
+
+        <!-- GCM 全局网络参数 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingTop="20dp"
+            android:paddingBottom="8dp"
+            android:text="GCM 全局网络设置"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/ech_dns"
+            android:textStyle="bold" />
+        <EditText
+            android:id="@+id/edittext_ech_dns"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="https://doh.pub/dns-query"
+            android:singleLine="true" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingTop="12dp"
+            android:text="@string/ech_domain"
+            android:textStyle="bold" />
+        <EditText
+            android:id="@+id/edittext_ech_domain"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="cloudflare-ech.com"
+            android:singleLine="true" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingTop="12dp"
+            android:text="@string/ws_conn"
+            android:textStyle="bold" />
+        <EditText
+            android:id="@+id/edittext_ws_conn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="3"
+            android:inputType="number"
+            android:singleLine="true" />
+
+        <CheckBox
+            android:id="@+id/checkbox_enable_dns_warmup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/enable_dns_warmup" />
+
+        <CheckBox
+            android:id="@+id/checkbox_enable_dynamic_pool"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/enable_dynamic_pool" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/dynamic_pool_max" />
+        <EditText
+            android:id="@+id/edittext_dynamic_pool_max"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="16"
+            android:inputType="number"
+            android:singleLine="true" />
 
         <!-- 保存按钮 -->
         <Button android:id="@+id/btn_save"

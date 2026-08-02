@@ -28,8 +28,13 @@ public class SettingsActivity extends AppCompatActivity {
     private CheckBox checkbox_bypass_geoip_cn;
     private CheckBox checkbox_bypass_geosite_cn;
     private EditText edittext_bypass_rules;
+    private EditText edittext_ech_dns;
+    private EditText edittext_ech_domain;
+    private EditText edittext_ws_conn;
+    private CheckBox checkbox_enable_dns_warmup;
+    private CheckBox checkbox_enable_dynamic_pool;
+    private EditText edittext_dynamic_pool_max;
     private Button btn_save;
-    private Button btn_runtime_logs;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -49,8 +54,13 @@ public class SettingsActivity extends AppCompatActivity {
         checkbox_bypass_geoip_cn = findViewById(R.id.checkbox_bypass_geoip_cn);
         checkbox_bypass_geosite_cn = findViewById(R.id.checkbox_bypass_geosite_cn);
         edittext_bypass_rules = findViewById(R.id.edittext_bypass_rules);
+        edittext_ech_dns = findViewById(R.id.edittext_ech_dns);
+        edittext_ech_domain = findViewById(R.id.edittext_ech_domain);
+        edittext_ws_conn = findViewById(R.id.edittext_ws_conn);
+        checkbox_enable_dns_warmup = findViewById(R.id.checkbox_enable_dns_warmup);
+        checkbox_enable_dynamic_pool = findViewById(R.id.checkbox_enable_dynamic_pool);
+        edittext_dynamic_pool_max = findViewById(R.id.edittext_dynamic_pool_max);
         btn_save = findViewById(R.id.btn_save);
-        btn_runtime_logs = findViewById(R.id.btn_runtime_logs);
 
         // 加载当前设置
         loadSettings();
@@ -58,10 +68,6 @@ public class SettingsActivity extends AppCompatActivity {
         // 设置选择应用按钮点击事件（始终可用）
         button_apps.setOnClickListener(v -> {
             startActivity(new Intent(this, AppListActivity.class));
-        });
-
-        btn_runtime_logs.setOnClickListener(v -> {
-            startActivity(new Intent(this, RuntimeLogActivity.class));
         });
 
         // 设置保存按钮点击事件
@@ -81,6 +87,12 @@ public class SettingsActivity extends AppCompatActivity {
         checkbox_bypass_geoip_cn.setChecked(prefs.getBypassGeoIpCn());
         checkbox_bypass_geosite_cn.setChecked(prefs.getBypassGeoSiteCn());
         edittext_bypass_rules.setText(prefs.getBypassRules());
+        edittext_ech_dns.setText(prefs.getEchDns());
+        edittext_ech_domain.setText(prefs.getEchDomain());
+        edittext_ws_conn.setText(String.valueOf(prefs.getWsConn()));
+        checkbox_enable_dns_warmup.setChecked(prefs.getEnableDnsWarmup());
+        checkbox_enable_dynamic_pool.setChecked(prefs.getEnableDynamicPool());
+        edittext_dynamic_pool_max.setText(String.valueOf(prefs.getDynamicPoolMax()));
 
         // 检查 VPN 是否正在运行
         boolean isVpnRunning = prefs.getEnable();
@@ -93,6 +105,12 @@ public class SettingsActivity extends AppCompatActivity {
             checkbox_bypass_geoip_cn.setEnabled(false);
             checkbox_bypass_geosite_cn.setEnabled(false);
             edittext_bypass_rules.setEnabled(false);
+            edittext_ech_dns.setEnabled(false);
+            edittext_ech_domain.setEnabled(false);
+            edittext_ws_conn.setEnabled(false);
+            checkbox_enable_dns_warmup.setEnabled(false);
+            checkbox_enable_dynamic_pool.setEnabled(false);
+            edittext_dynamic_pool_max.setEnabled(false);
             btn_save.setEnabled(false);
 
             Toast.makeText(this, "VPN 正在运行，无法修改全局设置", Toast.LENGTH_LONG).show();
@@ -128,6 +146,32 @@ public class SettingsActivity extends AppCompatActivity {
             return false;
         }
 
+        int wsConn;
+        try {
+            wsConn = Integer.parseInt(edittext_ws_conn.getText().toString().trim());
+        } catch (Exception e) {
+            Toast.makeText(this, "WebSocket 连接数格式错误", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        if (wsConn < 1 || wsConn > Preferences.MAX_DYNAMIC_POOL_LIMIT) {
+            Toast.makeText(this, "WebSocket 连接数必须在 1-" + Preferences.MAX_DYNAMIC_POOL_LIMIT + " 之间", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+
+        int dynamicPoolMax;
+        try {
+            dynamicPoolMax = Integer.parseInt(edittext_dynamic_pool_max.getText().toString().trim());
+        } catch (Exception e) {
+            Toast.makeText(this, "动态扩容上限格式错误", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        if (dynamicPoolMax > Preferences.MAX_DYNAMIC_POOL_LIMIT
+                || (checkbox_enable_dynamic_pool.isChecked() && dynamicPoolMax < wsConn)) {
+            Toast.makeText(this, "启用动态扩容时，上限必须在 WebSocket 连接数和 "
+                    + Preferences.MAX_DYNAMIC_POOL_LIMIT + " 之间", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+
         // 保存全局设置
         prefs.setGlobal(checkbox_global.isChecked());
         prefs.setSocksPort(port);
@@ -135,6 +179,12 @@ public class SettingsActivity extends AppCompatActivity {
         prefs.setBypassGeoIpCn(checkbox_bypass_geoip_cn.isChecked());
         prefs.setBypassGeoSiteCn(checkbox_bypass_geosite_cn.isChecked());
         prefs.setBypassRules(bypassRules);
+        prefs.setEchDns(edittext_ech_dns.getText().toString().trim());
+        prefs.setEchDomain(edittext_ech_domain.getText().toString().trim());
+        prefs.setWsConn(wsConn);
+        prefs.setEnableDnsWarmup(checkbox_enable_dns_warmup.isChecked());
+        prefs.setEnableDynamicPool(checkbox_enable_dynamic_pool.isChecked());
+        prefs.setDynamicPoolMax(dynamicPoolMax);
 
         return true;
     }

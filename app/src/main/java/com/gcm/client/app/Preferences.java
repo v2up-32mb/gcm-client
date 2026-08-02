@@ -50,6 +50,11 @@ public class Preferences
         public static final String DISABLE_ECH = "DisableEch";
         public static final String ENABLE_DNS_WARMUP = "EnableDnsWarmup";
         public static final String WS_CONN = "WsConn";
+        public static final String ENABLE_DYNAMIC_POOL = "EnableDynamicPool";
+        public static final String DYNAMIC_POOL_MAX = "DynamicPoolMax";
+        public static final int DEFAULT_WS_CONN = 3;
+        public static final int DEFAULT_DYNAMIC_POOL_MAX = 16;
+        public static final int MAX_DYNAMIC_POOL_LIMIT = 64;
         // IPv6 路由禁用
         public static final String DISABLE_IPV6_ROUTE = "DisableIpv6Route";
         
@@ -64,6 +69,36 @@ public class Preferences
         public Preferences(Context context) {
                 prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_MULTI_PROCESS);
                 currentProfileId = prefs.getString(CURRENT_PROFILE_ID, null);
+                migrateGlobalNetworkSettings();
+        }
+
+        private void migrateGlobalNetworkSettings() {
+                if (currentProfileId == null) {
+                        return;
+                }
+
+                String suffix = "_" + currentProfileId;
+                SharedPreferences.Editor editor = prefs.edit();
+                boolean changed = false;
+                if (!prefs.contains(ECH_DNS) && prefs.contains(ECH_DNS + suffix)) {
+                        editor.putString(ECH_DNS, prefs.getString(ECH_DNS + suffix, ""));
+                        changed = true;
+                }
+                if (!prefs.contains(ECH_DOMAIN) && prefs.contains(ECH_DOMAIN + suffix)) {
+                        editor.putString(ECH_DOMAIN, prefs.getString(ECH_DOMAIN + suffix, ""));
+                        changed = true;
+                }
+                if (!prefs.contains(WS_CONN) && prefs.contains(WS_CONN + suffix)) {
+                        editor.putInt(WS_CONN, prefs.getInt(WS_CONN + suffix, DEFAULT_WS_CONN));
+                        changed = true;
+                }
+                if (!prefs.contains(ENABLE_DNS_WARMUP) && prefs.contains(ENABLE_DNS_WARMUP + suffix)) {
+                        editor.putBoolean(ENABLE_DNS_WARMUP, prefs.getBoolean(ENABLE_DNS_WARMUP + suffix, false));
+                        changed = true;
+                }
+                if (changed) {
+                        editor.commit();
+                }
         }
 
         // Helper to get key with profile suffix
@@ -317,12 +352,13 @@ public class Preferences
 
         // GCM tunnel: WebSocket 连接数
         public int getWsConn() {
-                return prefs.getInt(getKey(WS_CONN), 3);
+                int count = prefs.getInt(WS_CONN, DEFAULT_WS_CONN);
+                return Math.max(1, Math.min(count, MAX_DYNAMIC_POOL_LIMIT));
         }
 
         public void setWsConn(int n) {
                 SharedPreferences.Editor editor = prefs.edit();
-                editor.putInt(getKey(WS_CONN), n);
+                editor.putInt(WS_CONN, Math.max(1, Math.min(n, MAX_DYNAMIC_POOL_LIMIT)));
                 editor.commit();
         }
 
@@ -339,23 +375,23 @@ public class Preferences
 
         // ECH DoH 服务器（查询 ECH 公钥用）
         public String getEchDns() {
-                return prefs.getString(getKey(ECH_DNS), "https://doh.pub/dns-query");
+                return prefs.getString(ECH_DNS, "https://doh.pub/dns-query");
         }
 
         public void setEchDns(String addr) {
                 SharedPreferences.Editor editor = prefs.edit();
-                editor.putString(getKey(ECH_DNS), addr);
+                editor.putString(ECH_DNS, addr);
                 editor.commit();
         }
 
         // ECH 查询域名
         public String getEchDomain() {
-                return prefs.getString(getKey(ECH_DOMAIN), "cloudflare-ech.com");
+                return prefs.getString(ECH_DOMAIN, "cloudflare-ech.com");
         }
 
         public void setEchDomain(String d) {
                 SharedPreferences.Editor editor = prefs.edit();
-                editor.putString(getKey(ECH_DOMAIN), d);
+                editor.putString(ECH_DOMAIN, d);
                 editor.commit();
         }
 
@@ -372,13 +408,32 @@ public class Preferences
 
         // DNS 预热开关（默认关闭）
         public boolean getEnableDnsWarmup() {
-                return prefs.getBoolean(getKey(ENABLE_DNS_WARMUP), false);
+                return prefs.getBoolean(ENABLE_DNS_WARMUP, false);
         }
 
         public void setEnableDnsWarmup(boolean enable) {
                 SharedPreferences.Editor editor = prefs.edit();
-                editor.putBoolean(getKey(ENABLE_DNS_WARMUP), enable);
+                editor.putBoolean(ENABLE_DNS_WARMUP, enable);
                 editor.commit();
+        }
+
+        // 连接池动态扩容（全局设置，默认关闭）
+        public boolean getEnableDynamicPool() {
+                return prefs.getBoolean(ENABLE_DYNAMIC_POOL, false);
+        }
+
+        public void setEnableDynamicPool(boolean enable) {
+                prefs.edit().putBoolean(ENABLE_DYNAMIC_POOL, enable).apply();
+        }
+
+        public int getDynamicPoolMax() {
+                int limit = prefs.getInt(DYNAMIC_POOL_MAX, DEFAULT_DYNAMIC_POOL_MAX);
+                return Math.max(1, Math.min(limit, MAX_DYNAMIC_POOL_LIMIT));
+        }
+
+        public void setDynamicPoolMax(int limit) {
+                prefs.edit().putInt(DYNAMIC_POOL_MAX,
+                        Math.max(1, Math.min(limit, MAX_DYNAMIC_POOL_LIMIT))).apply();
         }
 
         // IPv6 路由禁用

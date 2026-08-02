@@ -285,7 +285,9 @@ public class TProxyService extends VpnService {
                 prefs.getBypassGeoIpCn(),
                 prefs.getBypassGeoSiteCn(),
                 prefs.getBypassRules(),
-                true
+                true,
+                prefs.getEnableDynamicPool(),
+                prefs.getDynamicPoolMax()
         );
     }
 

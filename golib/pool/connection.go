@@ -1626,6 +1626,9 @@ func (p *ConnectionPool) maintainPool() {
 	if currentSize >= p.cfg.MaxPoolSize {
 		return
 	}
+	if !p.cfg.EnableDynamicPool {
+		return
+	}
 
 	// 检查是否需要按需扩容
 	needExpansion := false

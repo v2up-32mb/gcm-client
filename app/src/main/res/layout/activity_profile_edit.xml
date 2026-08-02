@@ -68,43 +68,6 @@
             android:hint="1.1.1.1,8.8.8.8"
             android:singleLine="true"/>
 
-        <!-- DoH 服务器（用于 DNS/ECH 查询） -->
-        <TextView android:text="@string/ech_dns"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textStyle="bold"
-            android:paddingTop="16dp"/>
-        <EditText android:id="@+id/ech_dns"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="https://doh.pub/dns-query"
-            android:singleLine="true"/>
-
-        <!-- ECH 查询域名 -->
-        <TextView android:text="@string/ech_domain"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textStyle="bold"
-            android:paddingTop="16dp"/>
-        <EditText android:id="@+id/ech_domain"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="cloudflare-ech.com"
-            android:singleLine="true"/>
-
-        <!-- WebSocket 连接数 -->
-        <TextView android:text="@string/ws_conn"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textStyle="bold"
-            android:paddingTop="16dp"/>
-        <EditText android:id="@+id/ws_conn"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="3"
-            android:inputType="number"
-            android:singleLine="true"/>
-
         <!-- 配置级选项 -->
         <TextView
             android:text="配置选项"
@@ -120,11 +83,6 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="@string/disable_ech"/>
-
-        <CheckBox android:id="@+id/enable_dns_warmup"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/enable_dns_warmup"/>
 
         <CheckBox android:id="@+id/disable_ipv6_route"
             android:layout_width="match_parent"

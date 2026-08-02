@@ -27,8 +27,14 @@ var (
 	socks5Server *socks5.Server
 )
 
+const (
+	defaultAndroidPoolSize       = 3
+	defaultAndroidDynamicPoolMax = 16
+	maxAndroidDynamicPoolLimit   = 64
+)
+
 // StartSocksProxy 启动 GCM 代理（gomobile AAR 入口）
-func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID, proxyIP, echDomain, dohURL string, enableECH, disableIPv6Route, enableDNSWarmup, bypassPrivate, bypassGeoIPCN, bypassGeoSiteCN bool, bypassRules string, verbose bool) error {
+func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID, proxyIP, echDomain, dohURL string, enableECH, disableIPv6Route, enableDNSWarmup, bypassPrivate, bypassGeoIPCN, bypassGeoSiteCN bool, bypassRules string, verbose, enableDynamicPool bool, dynamicPoolMax int) error {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
 	if socks5Server != nil {
@@ -36,7 +42,7 @@ func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID
 	}
 	logger.ClearRuntimeLogs()
 
-	c, err := buildConfig(listenAddr, workerHost, wsConn, relayIPs, userID, proxyIP, echDomain, dohURL, enableECH, disableIPv6Route, enableDNSWarmup, verbose)
+	c, err := buildConfig(listenAddr, workerHost, wsConn, relayIPs, userID, proxyIP, echDomain, dohURL, enableECH, disableIPv6Route, enableDNSWarmup, verbose, enableDynamicPool, dynamicPoolMax)
 	if err != nil {
 		return err
 	}
@@ -118,7 +124,7 @@ func ValidateBypassRules(rules string) error {
 	return routing.ValidateManualRules(rules)
 }
 
-func buildConfig(listenAddr, workerHost string, wsConn int, relayIPs, userID, proxyIP, echDomain, dohURL string, enableECH, disableIPv6Route, enableDNSWarmup, verbose bool) (*config.Config, error) {
+func buildConfig(listenAddr, workerHost string, wsConn int, relayIPs, userID, proxyIP, echDomain, dohURL string, enableECH, disableIPv6Route, enableDNSWarmup, verbose, enableDynamicPool bool, dynamicPoolMax int) (*config.Config, error) {
 	_ = disableIPv6Route
 	c := config.DefaultConfig()
 	c.ListenAddress = strings.TrimSpace(listenAddr)
@@ -129,11 +135,11 @@ func buildConfig(listenAddr, workerHost string, wsConn int, relayIPs, userID, pr
 	if c.WorkerHost == "" {
 		return nil, fmt.Errorf("Worker address is required")
 	}
-	if wsConn > 0 {
-		c.MinPoolSize, c.MaxPoolSize = wsConn, wsConn
-	} else {
-		c.MinPoolSize, c.MaxPoolSize = 3, 3
-	}
+	initialPoolSize, maxPoolSize := normalizeAndroidPoolSettings(wsConn, enableDynamicPool, dynamicPoolMax)
+	c.MinPoolSize, c.MaxPoolSize = initialPoolSize, maxPoolSize
+	c.EnableDynamicPool = enableDynamicPool
+	c.DynamicPoolMinSize = initialPoolSize
+	c.DynamicPoolMaxSize = maxPoolSize
 	if relayIPs != "" {
 		for _, item := range strings.Split(relayIPs, ",") {
 			if item = strings.TrimSpace(item); item != "" {
@@ -162,6 +168,30 @@ func buildConfig(listenAddr, workerHost string, wsConn int, relayIPs, userID, pr
 	c.EnableQualityMonitor = true
 
 	return c, nil
+}
+
+func normalizeAndroidPoolSettings(wsConn int, enableDynamicPool bool, dynamicPoolMax int) (int, int) {
+	initialPoolSize := wsConn
+	if initialPoolSize <= 0 {
+		initialPoolSize = defaultAndroidPoolSize
+	}
+	if initialPoolSize > maxAndroidDynamicPoolLimit {
+		initialPoolSize = maxAndroidDynamicPoolLimit
+	}
+	if !enableDynamicPool {
+		return initialPoolSize, initialPoolSize
+	}
+
+	if dynamicPoolMax <= 0 {
+		dynamicPoolMax = defaultAndroidDynamicPoolMax
+	}
+	if dynamicPoolMax > maxAndroidDynamicPoolLimit {
+		dynamicPoolMax = maxAndroidDynamicPoolLimit
+	}
+	if dynamicPoolMax < initialPoolSize {
+		dynamicPoolMax = initialPoolSize
+	}
+	return initialPoolSize, dynamicPoolMax
 }
 
 // StopSocksProxy 停止代理并逆序释放所有资源。
