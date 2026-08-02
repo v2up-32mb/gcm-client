@@ -230,10 +230,9 @@ func (rm *RelayManager) rescoreAll() {
 	rm.log.Info("开始全面重新评分 %d 个节点...", len(relays))
 
 	results := rm.batchTestLatency(relays)
-	rm.totalTestCount += len(results)
 
 	rm.mu.Lock()
-	defer rm.mu.Unlock()
+	rm.totalTestCount += len(results)
 
 	// 更新所有节点的状态
 	rm.allNodes = make([]*RelayNode, 0, len(results))
@@ -252,16 +251,20 @@ func (rm *RelayManager) rescoreAll() {
 			rm.optimalRelays = append(rm.optimalRelays, r)
 		}
 	}
+	validCount := len(rm.optimalRelays)
+	rm.mu.Unlock()
 
 	elapsed := time.Since(startTime)
-	diff := len(rm.optimalRelays) - beforeCount
+	diff := validCount - beforeCount
 	if diff >= 0 {
 		rm.log.Info("重新评分完成: 有效%d个 (新增%d个), 耗时%dms",
-			len(rm.optimalRelays), diff, elapsed.Milliseconds())
+			validCount, diff, elapsed.Milliseconds())
 	} else {
 		rm.log.Info("重新评分完成: 有效%d个 (移除%d个), 耗时%dms",
-			len(rm.optimalRelays), -diff, elapsed.Milliseconds())
+			validCount, -diff, elapsed.Milliseconds())
 	}
+	// logTopRelays acquires a read lock. Call it only after releasing the
+	// rescore write lock so periodic rescoring cannot deadlock relay selection.
 	rm.logTopRelays()
 }
 
@@ -489,10 +492,9 @@ func (rm *RelayManager) ForceRescore() bool {
 
 	// 批量测速并更新
 	results := rm.batchTestLatency(candidateNodes)
-	rm.totalTestCount += len(results)
 
 	rm.mu.Lock()
-	defer rm.mu.Unlock()
+	rm.totalTestCount += len(results)
 
 	// 更新所有节点
 	rm.allNodes = make([]*RelayNode, 0, len(results))
@@ -514,7 +516,10 @@ func (rm *RelayManager) ForceRescore() bool {
 	rm.resortByScoreLocked()
 
 	afterBest := rm.getNextRelayLocked()
-	rm.log.Info("强制重评完成: 有效节点%d个", len(rm.optimalRelays))
+	validCount := len(rm.optimalRelays)
+	rm.mu.Unlock()
+
+	rm.log.Info("强制重评完成: 有效节点%d个", validCount)
 	if beforeBest != nil && afterBest != nil {
 		rm.log.Info("最优节点: %s:%d(%dms) -> %s:%d(%dms)",
 			beforeBest.IP, beforeBest.Port, beforeBest.Latency.Milliseconds(),
