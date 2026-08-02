@@ -4,11 +4,101 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"gcm/config"
 )
+
+const (
+	maxRuntimeLogLines = 2000
+	maxRuntimeLogBytes = 256 * 1024
+)
+
+type runtimeLogStore struct {
+	mu       sync.RWMutex
+	lines    []string
+	bytes    int
+	maxLines int
+	maxBytes int
+}
+
+func newRuntimeLogStore(maxLines, maxBytes int) *runtimeLogStore {
+	return &runtimeLogStore{maxLines: maxLines, maxBytes: maxBytes}
+}
+
+func (s *runtimeLogStore) append(line string) {
+	if s.maxLines <= 0 || s.maxBytes <= 1 {
+		return
+	}
+	if len(line)+1 > s.maxBytes {
+		line = truncateUTF8(line, s.maxBytes-1)
+	}
+	lineBytes := len(line) + 1
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for len(s.lines) > 0 && (len(s.lines) >= s.maxLines || s.bytes+lineBytes > s.maxBytes) {
+		s.bytes -= len(s.lines[0]) + 1
+		s.lines = s.lines[1:]
+	}
+	s.lines = append(s.lines, line)
+	s.bytes += lineBytes
+}
+
+func truncateUTF8(value string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(value) <= maxBytes {
+		return value
+	}
+	value = value[:maxBytes]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
+}
+
+func (s *runtimeLogStore) snapshot() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return strings.Join(s.lines, "\n")
+}
+
+func (s *runtimeLogStore) clear() {
+	s.mu.Lock()
+	s.lines = nil
+	s.bytes = 0
+	s.mu.Unlock()
+}
+
+var runtimeLogs = newRuntimeLogStore(maxRuntimeLogLines, maxRuntimeLogBytes)
+
+// AppendRuntimeLog adds an Android lifecycle event to the current VPN session.
+func AppendRuntimeLog(scope, message string) {
+	if scope = strings.TrimSpace(scope); scope == "" {
+		scope = "Android"
+	}
+	if message = strings.TrimSpace(message); message == "" {
+		return
+	}
+	line := fmt.Sprintf("[%s] [I] [%s] %s", time.Now().Format("15:04:05"), scope, message)
+	runtimeLogs.append(line)
+	fmt.Println(line)
+}
+
+// GetRuntimeLogs returns a bounded snapshot of the current VPN session logs.
+func GetRuntimeLogs() string {
+	return runtimeLogs.snapshot()
+}
+
+// ClearRuntimeLogs starts a fresh in-memory log session.
+func ClearRuntimeLogs() {
+	runtimeLogs.clear()
+}
 
 // Logger 日志器
 type Logger struct {
@@ -60,6 +150,7 @@ func (l *Logger) log(level config.LogLevel, format string, args ...interface{}) 
 	timestamp := time.Now().Format("15:04:05")
 	msg := fmt.Sprintf(format, args...)
 	logMsg := fmt.Sprintf("[%s] [%s] [%s] %s", timestamp, levelTag, l.scope, msg)
+	runtimeLogs.append(logMsg)
 
 	// 输出到控制台
 	fmt.Println(logMsg)

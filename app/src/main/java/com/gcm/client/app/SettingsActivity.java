@@ -29,6 +29,7 @@ public class SettingsActivity extends AppCompatActivity {
     private CheckBox checkbox_bypass_geosite_cn;
     private EditText edittext_bypass_rules;
     private Button btn_save;
+    private Button btn_runtime_logs;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -49,6 +50,7 @@ public class SettingsActivity extends AppCompatActivity {
         checkbox_bypass_geosite_cn = findViewById(R.id.checkbox_bypass_geosite_cn);
         edittext_bypass_rules = findViewById(R.id.edittext_bypass_rules);
         btn_save = findViewById(R.id.btn_save);
+        btn_runtime_logs = findViewById(R.id.btn_runtime_logs);
 
         // 加载当前设置
         loadSettings();
@@ -56,6 +58,10 @@ public class SettingsActivity extends AppCompatActivity {
         // 设置选择应用按钮点击事件（始终可用）
         button_apps.setOnClickListener(v -> {
             startActivity(new Intent(this, AppListActivity.class));
+        });
+
+        btn_runtime_logs.setOnClickListener(v -> {
+            startActivity(new Intent(this, RuntimeLogActivity.class));
         });
 
         // 设置保存按钮点击事件

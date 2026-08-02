@@ -110,6 +110,9 @@ func TestReconnectMarksEveryConnectionClosed(t *testing.T) {
 	if !connA.closed.Load() || !connB.closed.Load() {
 		t.Fatal("network recovery did not mark every connection closed")
 	}
+	if len(p.managerByConn) != 0 {
+		t.Fatalf("network recovery retained %d connection managers", len(p.managerByConn))
+	}
 }
 
 func TestWriteMessageMarksSocketClosedAfterWriteFailure(t *testing.T) {

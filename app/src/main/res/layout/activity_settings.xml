@@ -17,6 +17,12 @@
             android:textSize="18sp"
             android:paddingBottom="16dp"/>
 
+        <Button
+            android:id="@+id/btn_runtime_logs"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/view_runtime_logs" />
+
         <!-- 代理模式 -->
         <TextView
             android:text="代理模式"

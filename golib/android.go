@@ -34,6 +34,7 @@ func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID
 	if socks5Server != nil {
 		return fmt.Errorf("GCM proxy is already running")
 	}
+	logger.ClearRuntimeLogs()
 
 	c, err := buildConfig(listenAddr, workerHost, wsConn, relayIPs, userID, proxyIP, echDomain, dohURL, enableECH, disableIPv6Route, enableDNSWarmup, verbose)
 	if err != nil {
@@ -47,6 +48,7 @@ func StartSocksProxy(listenAddr, workerHost string, wsConn int, relayIPs, userID
 	logger.InitGlobalLogger(c)
 	systemLog := logger.GetLogger("System")
 	log.SetFlags(log.LstdFlags)
+	systemLog.Info("启动 GCM: Worker=%s, 连接数=%d, ECH=%v, DoH=%v", c.WorkerHost, c.MinPoolSize, c.EnableECH, c.EnableDoH)
 
 	d := dns.NewDoHClient(c)
 	dc := dns.NewDNSCache(c, d)
@@ -169,6 +171,7 @@ func StopSocksProxy() {
 	if socks5Server == nil {
 		return
 	}
+	logger.GetLogger("System").Info("正在停止 GCM")
 	if echManager != nil {
 		echManager.StopAutoRefresh()
 	}
@@ -183,10 +186,27 @@ func StopSocksProxy() {
 // NotifyNetworkChanged asks the running pool to replace sockets bound to the
 // previous physical network. The Android VPN interface is left untouched.
 func NotifyNetworkChanged() {
-	lifecycleMu.Lock()
-	p := connPool
-	lifecycleMu.Unlock()
-	if p != nil {
-		p.Reconnect("Android default network changed")
+	Reconnect("Android default network changed")
+}
+
+// Reconnect replaces all current WebSockets while preserving the VPN/TUN.
+func Reconnect(reason string) {
+	if reason = strings.TrimSpace(reason); reason == "" {
+		reason = "Android reconnect requested"
 	}
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	if connPool != nil {
+		connPool.Reconnect(reason)
+	}
+}
+
+// AppendRuntimeLog records an Android lifecycle event in the VPN log buffer.
+func AppendRuntimeLog(scope, message string) {
+	logger.AppendRuntimeLog(scope, message)
+}
+
+// GetRuntimeLogs returns logs accumulated since the current VPN start.
+func GetRuntimeLogs() string {
+	return logger.GetRuntimeLogs()
 }

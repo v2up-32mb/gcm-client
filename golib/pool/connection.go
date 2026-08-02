@@ -1862,10 +1862,7 @@ func (p *ConnectionPool) Reconnect(reason string) {
 	}
 	p.log.Info("网络变化，重建 %d 条 WebSocket 连接: %s", len(items), reason)
 	for _, item := range items {
-		item.closed.Store(true)
-		if item.WS != nil {
-			item.WS.Close() // nolint:errcheck
-		}
+		p.RetireConnection(item, reason)
 	}
 }
 

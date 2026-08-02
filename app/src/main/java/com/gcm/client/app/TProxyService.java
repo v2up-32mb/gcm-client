@@ -18,8 +18,10 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.pm.ServiceInfo;
 import android.net.ConnectivityManager;
@@ -27,9 +29,12 @@ import android.net.Network;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
+import android.os.PowerManager;
+import android.os.SystemClock;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
 
 import gcm.Gcm;
 
@@ -37,6 +42,7 @@ public class TProxyService extends VpnService {
     private static final String TAG = "TProxyService";
     private static final String CHANNEL_ID = "socks5";
     private static final int NOTIFICATION_ID = 1;
+    private static final long SCREEN_RECONNECT_THRESHOLD_MS = 60_000L;
 
     private static native boolean TProxyStartService(String configPath, int fd);
     private static native boolean TProxyStopService();
@@ -46,8 +52,11 @@ public class TProxyService extends VpnService {
     public static final String ACTION_CONNECT = "com.gcm.client.app.CONNECT";
     public static final String ACTION_DISCONNECT = "com.gcm.client.app.DISCONNECT";
     public static final String ACTION_STATUS = "com.gcm.client.app.STATUS";
+    public static final String ACTION_REQUEST_RUNTIME_LOGS = "com.gcm.client.app.REQUEST_RUNTIME_LOGS";
+    public static final String ACTION_RUNTIME_LOGS = "com.gcm.client.app.RUNTIME_LOGS";
     public static final String EXTRA_STATUS = "status";
     public static final String EXTRA_ERROR = "error";
+    public static final String EXTRA_RUNTIME_LOGS = "runtime_logs";
     public static final String STATUS_STARTING = "starting";
     public static final String STATUS_STARTED = "started";
     public static final String STATUS_STOPPED = "stopped";
@@ -66,6 +75,9 @@ public class TProxyService extends VpnService {
     private ConnectivityManager.NetworkCallback networkCallback;
     private Network defaultNetwork;
     private boolean networkReconnectPending;
+    private BroadcastReceiver screenReceiver;
+    private long screenOffElapsedRealtime = -1L;
+    private boolean logRequestOnly;
 
     @Override
     public void onCreate() {
@@ -75,6 +87,15 @@ public class TProxyService extends VpnService {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && ACTION_REQUEST_RUNTIME_LOGS.equals(intent.getAction())) {
+            sendRuntimeLogs();
+            if (!starting && !runtimeRunning && tunFd == null) {
+                logRequestOnly = true;
+                stopSelf(startId);
+                return START_NOT_STICKY;
+            }
+            return START_STICKY;
+        }
         if (intent != null && ACTION_DISCONNECT.equals(intent.getAction())) {
             new Thread(this::stopService, "gcm-vpn-stop").start();
             return START_NOT_STICKY;
@@ -104,6 +125,11 @@ public class TProxyService extends VpnService {
 
     @Override
     public void onDestroy() {
+        if (logRequestOnly) {
+            logRequestOnly = false;
+            super.onDestroy();
+            return;
+        }
         if (!stopping) {
             cleanupRuntime();
             new Preferences(this).setEnable(false);
@@ -139,6 +165,8 @@ public class TProxyService extends VpnService {
             }
 
             runtimeRunning = true;
+            appendRuntimeLog("VPN 与本地隧道已启动");
+            registerScreenReceiver();
             registerNetworkCallback();
             prefs.setEnable(true);
             updateNotification("VPN 已连接");
@@ -267,6 +295,7 @@ public class TProxyService extends VpnService {
             message = error.getClass().getSimpleName();
         }
         Log.e(TAG, "VPN startup failed: " + message, error);
+        appendRuntimeLog("VPN 启动失败: " + message);
         stopping = true;
         cleanupRuntime();
         prefs.setEnable(false);
@@ -285,6 +314,7 @@ public class TProxyService extends VpnService {
                     return;
                 }
                 if (!stopping && !TProxyIsRunning()) {
+                    appendRuntimeLog("hev-socks5-tunnel 意外停止");
                     failStartup(prefs, new IllegalStateException("hev-socks5-tunnel 意外停止"));
                     return;
                 }
@@ -299,6 +329,7 @@ public class TProxyService extends VpnService {
             }
             stopping = true;
         }
+        appendRuntimeLog("收到停止 VPN 请求");
         cleanupRuntime();
         new Preferences(this).setEnable(false);
         sendStatus(STATUS_STOPPED, null);
@@ -307,7 +338,9 @@ public class TProxyService extends VpnService {
     }
 
     private void cleanupRuntime() {
+        appendRuntimeLog("正在清理 VPN runtime");
         runtimeRunning = false;
+        unregisterScreenReceiver();
         unregisterNetworkCallback();
         try {
             TProxyStopService();
@@ -345,8 +378,9 @@ public class TProxyService extends VpnService {
                     changed = defaultNetwork != null && !defaultNetwork.equals(network);
                     defaultNetwork = network;
                 }
+                appendRuntimeLog(changed ? "默认网络已切换" : "默认网络已可用");
                 if (changed) {
-                    scheduleNetworkReconnect();
+                    scheduleReconnect("Android default network changed");
                 }
             }
 
@@ -360,7 +394,8 @@ public class TProxyService extends VpnService {
                     }
                 }
                 if (lost) {
-                    scheduleNetworkReconnect();
+                    appendRuntimeLog("默认网络已断开");
+                    scheduleReconnect("Android default network lost");
                 }
             }
         };
@@ -379,6 +414,7 @@ public class TProxyService extends VpnService {
                 defaultNetwork = null;
             }
             Log.w(TAG, "Failed to register network callback", error);
+            appendRuntimeLog("注册默认网络监听失败: " + error.getMessage());
         }
     }
 
@@ -402,30 +438,132 @@ public class TProxyService extends VpnService {
         }
     }
 
-    private void scheduleNetworkReconnect() {
+    private void registerScreenReceiver() {
+        if (screenReceiver != null) {
+            return;
+        }
+
+        BroadcastReceiver receiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                String action = intent.getAction();
+                if (Intent.ACTION_SCREEN_OFF.equals(action)) {
+                    synchronized (networkLock) {
+                        screenOffElapsedRealtime = SystemClock.elapsedRealtime();
+                    }
+                    appendRuntimeLog("屏幕已关闭");
+                    return;
+                }
+                if (!Intent.ACTION_SCREEN_ON.equals(action)) {
+                    return;
+                }
+
+                long screenOffDuration;
+                synchronized (networkLock) {
+                    if (screenOffElapsedRealtime < 0) {
+                        screenOffDuration = -1L;
+                    } else {
+                        screenOffDuration = SystemClock.elapsedRealtime() - screenOffElapsedRealtime;
+                    }
+                    screenOffElapsedRealtime = -1L;
+                }
+
+                if (screenOffDuration < 0) {
+                    appendRuntimeLog("屏幕已点亮");
+                } else {
+                    long seconds = screenOffDuration / 1000L;
+                    appendRuntimeLog("屏幕已点亮，息屏 " + seconds + " 秒");
+                    if (screenOffDuration >= SCREEN_RECONNECT_THRESHOLD_MS) {
+                        scheduleReconnect("Android screen resumed after " + seconds + "s");
+                    }
+                }
+            }
+        };
+
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        filter.addAction(Intent.ACTION_SCREEN_ON);
+        try {
+            ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_EXPORTED);
+            screenReceiver = receiver;
+            PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (powerManager != null && !powerManager.isInteractive()) {
+                synchronized (networkLock) {
+                    screenOffElapsedRealtime = SystemClock.elapsedRealtime();
+                }
+            }
+            appendRuntimeLog("屏幕状态监听已启动");
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Failed to register screen receiver", error);
+            appendRuntimeLog("注册屏幕状态监听失败: " + error.getMessage());
+        }
+    }
+
+    private void unregisterScreenReceiver() {
+        BroadcastReceiver receiver = screenReceiver;
+        screenReceiver = null;
+        synchronized (networkLock) {
+            screenOffElapsedRealtime = -1L;
+        }
+        if (receiver != null) {
+            try {
+                unregisterReceiver(receiver);
+            } catch (RuntimeException error) {
+                Log.w(TAG, "Failed to unregister screen receiver", error);
+            }
+        }
+    }
+
+    private void scheduleReconnect(String reason) {
         synchronized (networkLock) {
             if (!runtimeRunning || networkReconnectPending) {
                 return;
             }
             networkReconnectPending = true;
         }
+        appendRuntimeLog("计划重建 GCM 连接: " + reason);
 
         new Thread(() -> {
             try {
                 Thread.sleep(300);
                 if (runtimeRunning) {
-                    Gcm.notifyNetworkChanged();
+                    Gcm.reconnect(reason);
+                    appendRuntimeLog("已触发 GCM 连接重建: " + reason);
                 }
             } catch (InterruptedException error) {
                 Thread.currentThread().interrupt();
             } catch (Throwable error) {
                 Log.w(TAG, "Failed to reconnect after network change", error);
+                appendRuntimeLog("GCM 连接重建失败: " + error.getMessage());
             } finally {
                 synchronized (networkLock) {
                     networkReconnectPending = false;
                 }
             }
         }, "gcm-network-reconnect").start();
+    }
+
+    private void appendRuntimeLog(String message) {
+        Log.i(TAG, message);
+        try {
+            Gcm.appendRuntimeLog("AndroidVPN", message);
+        } catch (Throwable error) {
+            Log.w(TAG, "Failed to append runtime log", error);
+        }
+    }
+
+    private void sendRuntimeLogs() {
+        String logs = "";
+        try {
+            logs = Gcm.getRuntimeLogs();
+        } catch (Throwable error) {
+            Log.w(TAG, "Failed to read runtime logs", error);
+            logs = "读取运行日志失败: " + error.getMessage();
+        }
+        Intent response = new Intent(ACTION_RUNTIME_LOGS);
+        response.setPackage(getPackageName());
+        response.putExtra(EXTRA_RUNTIME_LOGS, logs);
+        sendBroadcast(response);
     }
 
     private void sendStatus(String status, String error) {
