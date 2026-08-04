@@ -18,6 +18,8 @@
         <string name="disable_ech">禁用 ECH（标准 TLS 1.3）</string>
         <string name="enable_dns_warmup">启用 DNS 预热（启动时预解析常见域名，加快首次连接，但可能导致冷启动延迟）</string>
         <string name="ws_conn">WebSocket 连接数：</string>
+        <string name="enable_dynamic_pool">启用连接池动态扩容</string>
+        <string name="dynamic_pool_max">动态扩容连接上限：</string>
 
         <!-- Profile Management -->
         <string name="profile_label">配置节点：</string>

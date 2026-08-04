@@ -16,6 +16,8 @@ func TestBuildConfigMatchesMainParameters(t *testing.T) {
 		false,
 		true,
 		true,
+		false,
+		16,
 	)
 	if err != nil {
 		t.Fatalf("buildConfig() error = %v", err)
@@ -42,13 +44,13 @@ func TestBuildConfigMatchesMainParameters(t *testing.T) {
 	if !cfg.EnableDNSWarmup {
 		t.Fatal("EnableDNSWarmup = false")
 	}
-	if cfg.MinPoolSize != 3 || cfg.MaxPoolSize != 3 {
+	if cfg.MinPoolSize != 3 || cfg.MaxPoolSize != 3 || cfg.EnableDynamicPool {
 		t.Fatalf("pool size = %d..%d", cfg.MinPoolSize, cfg.MaxPoolSize)
 	}
 }
 
 func TestBuildConfigPreservesMainDoHFallback(t *testing.T) {
-	cfg, err := buildConfig("127.0.0.1:1080", "wss://worker.example/", 0, "", "", "", "", "", false, false, false, false)
+	cfg, err := buildConfig("127.0.0.1:1080", "wss://worker.example/", 0, "", "", "", "", "", false, false, false, false, false, 0)
 	if err != nil {
 		t.Fatalf("buildConfig() error = %v", err)
 	}
@@ -57,6 +59,32 @@ func TestBuildConfigPreservesMainDoHFallback(t *testing.T) {
 	}
 	if cfg.DoHUrl != "" {
 		t.Fatalf("DoHUrl = %q, want main fallback sentinel", cfg.DoHUrl)
+	}
+}
+
+func TestBuildConfigDynamicPoolSettings(t *testing.T) {
+	cfg, err := buildConfig("127.0.0.1:1080", "worker.example", 3, "", "", "", "", "", false, false, false, false, true, 16)
+	if err != nil {
+		t.Fatalf("buildConfig() error = %v", err)
+	}
+	if !cfg.EnableDynamicPool || cfg.MinPoolSize != 3 || cfg.MaxPoolSize != 16 {
+		t.Fatalf("dynamic pool config = enabled:%v size:%d..%d", cfg.EnableDynamicPool, cfg.MinPoolSize, cfg.MaxPoolSize)
+	}
+
+	cfg, err = buildConfig("127.0.0.1:1080", "worker.example", 3, "", "", "", "", "", false, false, false, false, true, 1000)
+	if err != nil {
+		t.Fatalf("buildConfig() with oversized limit error = %v", err)
+	}
+	if cfg.MaxPoolSize != maxAndroidDynamicPoolLimit {
+		t.Fatalf("oversized dynamic pool max = %d, want %d", cfg.MaxPoolSize, maxAndroidDynamicPoolLimit)
+	}
+
+	cfg, err = buildConfig("127.0.0.1:1080", "worker.example", 3, "", "", "", "", "", false, false, false, false, true, 1)
+	if err != nil {
+		t.Fatalf("buildConfig() with undersized limit error = %v", err)
+	}
+	if cfg.MaxPoolSize != cfg.MinPoolSize {
+		t.Fatalf("dynamic pool max %d is below initial min %d", cfg.MaxPoolSize, cfg.MinPoolSize)
 	}
 }
 
